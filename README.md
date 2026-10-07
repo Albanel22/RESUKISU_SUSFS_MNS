@@ -32,6 +32,10 @@ Les URLs et commits sont visibles dans le workflow afin que chaque exécution so
 
 `manual-integrate.md` conserve les modèles de hooks manuels ReSukiSU. Pour un kernel non-GKI, ces hooks doivent être vérifiés et adaptés à la version exacte du code source ; leur absence peut faire échouer la compilation. SUSFS sur non-GKI est un backport spécifique, et non une compatibilité universelle garantie.
 
+## Choix Kconfig ReSukiSU
+
+La révision ReSukiSU `90b4a4c70f70c835b01c2be6deac58ee3c0cb4c2` place `KSU_TRACEPOINT_HOOK`, `KSU_MANUAL_HOOK` et `KSU_SUSFS` dans un choix exclusif. Les adaptations de `Branche-A` utilisent les hooks protégés par `CONFIG_KSU_SUSFS`; le build sélectionne donc exclusivement `CONFIG_KSU_SUSFS=y` et force `CONFIG_KSU_MANUAL_HOOK` ainsi que `CONFIG_KSU_TRACEPOINT_HOOK` à `n`. Les options `KSU_MANUAL_HOOK_AUTO_*` restent désactivées car elles dépendent du mode Manual Hook.
+
 ## Artefacts produits
 
 Le job téléverse :
