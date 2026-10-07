@@ -509,6 +509,24 @@ if [[ -f "techpack/display/msm/msm_drv.c" ]]; then
 fi
 
 # =====================================================================
+# 7b. FIX BUGS KERNEL LINEAGEOS
+# =====================================================================
+printf '%s\n' '=== Fix bugs kernel LineageOS ==='
+
+# Fix 1 : duplicate static dans dsi_display_mot_ext.c
+DSI_FILE="$KERNEL_DIR/techpack/display/msm/dsi/dsi_display_mot_ext.c"
+if [[ -f "$DSI_FILE" ]]; then
+  if grep -q "^static static " "$DSI_FILE"; then
+    sed -i 's/^static static /static /' "$DSI_FILE"
+    printf '%s\n' '✅ Fix duplicate static appliqué (dsi_display_mot_ext.c)'
+  else
+    printf '%s\n' '⏭️  Pas de duplicate static détecté'
+  fi
+fi
+
+printf '%s\n' '✅ Fixes kernel LineageOS appliqués'
+
+# =====================================================================
 # 8. COMPILATION
 # =====================================================================
 printf '%s\n' '=== Compilation du kernel et des modules ==='
