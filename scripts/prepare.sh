@@ -32,7 +32,7 @@ cp -a "$ROOT/ReSukiSU" "$KERNEL_DIR/KernelSU"
 ln -s ../KernelSU/kernel "$KERNEL_DIR/drivers/kernelsu"
 
 # =====================================================================
-# 2. INTÉGRATION SUSFS JackA1ltman (remplace l'ancienne méthode manuelle)
+# 2. INTÉGRATION SUSFS JackA1ltman
 # =====================================================================
 echo "=== Intégration SUSFS 4.19 JackA1ltman ==="
 
@@ -46,13 +46,37 @@ wget -q -O /tmp/susfs_patch_to_4.19.patch "$SUSFS_PATCH_URL" || {
 # 2.2 Appliquer le patch SUSFS
 echo "→ Application du patch SUSFS..."
 if ! patch -p1 --forward --batch < /tmp/susfs_patch_to_4.19.patch; then
+    echo ""
     echo "⚠️  Rejets détectés dans le patch SUSFS"
-    echo "→ Fichiers .rej :"
-    find . -name '*.rej' -print
+    echo ""
+
+    # ═══════════════════════════════════════════════════════════
+    # SAUVEGARDE DES REJETS pour analyse ultérieure
+    # ═══════════════════════════════════════════════════════════
+    REJ_DIR="$BUNDLE_DIR/rej-analysis"
+    mkdir -p "$REJ_DIR"
+
+    echo "→ Copie des fichiers .rej et .orig dans $REJ_DIR/"
+    find "$KERNEL_DIR" -type f -name '*.rej' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
+    find "$KERNEL_DIR" -type f -name '*.orig' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
+
+    # Aussi copier les fichiers source impactés pour référence
+    for f in fs/namespace.c fs/super.c fs/proc/task_mmu.c; do
+        if [[ -f "$KERNEL_DIR/$f" ]]; then
+            cp "$KERNEL_DIR/$f" "$REJ_DIR/$(basename $f).patched"
+        fi
+    done
+
+    echo ""
+    echo "→ Contenu du dossier $REJ_DIR/ :"
+    ls -la "$REJ_DIR/" || true
+    echo ""
+    echo "→ Liste des .rej trouvés :"
+    find "$KERNEL_DIR" -name '*.rej' -print
     echo ""
     echo "⚠️  Ces rejets doivent être résolus manuellement."
-    echo "⚠️  Consulte les .rej un par un et applique les hunks à la main."
-    echo "⚠️  Puis relance le workflow."
+    echo "⚠️  Télécharge l'artifact 'rej-analysis' depuis GitHub Actions."
+    echo "⚠️  Puis on les résoudra ensemble."
     exit 1
 fi
 
@@ -92,19 +116,12 @@ for f in fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; do
     }
 done
 
-# Vérifier le hook input (utilisé par KSU pour le keyevent hook)
+# Vérifier le hook input
 if ! grep -q 'ksu_handle_input_handle_event' "$KERNEL_DIR/drivers/input/input.c"; then
     echo "⚠️  Hook input manquant dans drivers/input/input.c"
     echo "⚠️  Cela peut causer des problèmes au boot."
-    echo "⚠️  Vérifie manuellement que le script inline hook l'a bien appliqué."
     exit 1
 fi
-
-# Vérifier que les rejets ont été nettoyés
-[[ -z "$(find "$KERNEL_DIR" -name '*.rej' -print -quit)" ]] || {
-    echo "❌ Des fichiers .rej persistent"
-    exit 1
-}
 
 # =====================================================================
 # 4. RÉCAPITULATIF
