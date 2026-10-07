@@ -77,6 +77,33 @@ done
 
 grep -E 'CONFIG_(KSU|KSU_SUSFS|THREAD_INFO_IN_TASK)' "$OUT/.config" | tee "$ROOT/ksu-susfs.config"
 
+# ==================== 5. PATCH SIGNATURES MODULE ====================
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# ==================== 6. PATCH TACTILE ====================
+printf '%s\n' '=== Patch tactile ==='
+if [[ -f "techpack/display/msm/msm_drv.c" ]]; then
+  if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
+    printf '%s\n' '' '/* --- Début Patch Tactile --- */' \
+      '#include <linux/notifier.h>' \
+      '#include <linux/module.h>' \
+      'static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);' \
+      'int panel_register_notifier(struct notifier_block *nb) {' \
+      '    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);' \
+      '}' \
+      'EXPORT_SYMBOL(panel_register_notifier);' \
+      'int panel_unregister_notifier(struct notifier_block *nb) {' \
+      '    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);' \
+      '}' \
+      'EXPORT_SYMBOL(panel_unregister_notifier);' \
+      'void touch_set_state(int state) { return; }' \
+      'EXPORT_SYMBOL(touch_set_state);' \
+      '/* --- Fin Patch Tactile --- */' \
+      >> techpack/display/msm/msm_drv.c
+    printf '%s\n' '✅ Patch tactile appliqué'
+  fi
+fi
+
 printf '%s\n' '=== Compilation du kernel et des modules ==='
 make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
   KCFLAGS=-Wno-error -j"$JOBS" Image.gz modules 2>&1 | tee "$LOG"

@@ -6,10 +6,8 @@ KERNEL_DIR="${KERNEL_DIR:-$ROOT/kernel}"
 BUNDLE_DIR="${BUNDLE_DIR:-$ROOT}"
 RESUKISU_URL="https://github.com/ReSukiSU/ReSukiSU.git"
 RESUKISU_COMMIT="90b4a4c70f70c835b01c2be6deac58ee3c0cb4c2"
-SOURCE_COMMIT="c21b90c6860eeade8da37ea1212aa6135cf99e1f"
 
 cd "$KERNEL_DIR"
-git reset --hard "$SOURCE_COMMIT"
 git clean -fdx
 
 if [[ ! -d "$ROOT/ReSukiSU/.git" ]]; then

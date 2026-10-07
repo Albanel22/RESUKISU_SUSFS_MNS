@@ -14,7 +14,6 @@ jobs:
       ROOT: ${{ github.workspace }}/work
       KERNEL_DIR: ${{ github.workspace }}/work/kernel
       SOURCE_URL: https://github.com/LineageOS/android_kernel_motorola_sm8250
-      SOURCE_COMMIT: c21b90c6860eeade8da37ea1212aa6135cf99e1f
       RESUKISU_URL: https://github.com/ReSukiSU/ReSukiSU.git
       RESUKISU_COMMIT: 90b4a4c70f70c835b01c2be6deac58ee3c0cb4c2
       BOOT_URL: https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img
@@ -35,8 +34,6 @@ jobs:
           set -euxo pipefail
           mkdir -p "$ROOT/reference"
           git clone --filter=blob:none --no-checkout "$SOURCE_URL" "$KERNEL_DIR"
-          git -C "$KERNEL_DIR" fetch --depth=1 origin "$SOURCE_COMMIT"
-          git -C "$KERNEL_DIR" checkout --detach "$SOURCE_COMMIT"
           wget --retry-connrefused --tries=5 -O "$ROOT/reference/boot.img" "$BOOT_URL"
           wget --retry-connrefused --tries=5 -O "$ROOT/reference/dtbo.img" "$DTBO_URL"
           sha256sum "$ROOT/reference/boot.img" "$ROOT/reference/dtbo.img"
