@@ -51,24 +51,27 @@ if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
   echo ""
   echo "=== Installation des dépendances APT ==="
 
-  # Corrige le miroir GitHub Actions si nécessaire
+  # Force HTTPS partout dans apt-mirrors.txt (HTTP timeout sur GitHub Actions)
   if [[ -f /etc/apt/apt-mirrors.txt ]]; then
-    # Remplace le miroir Azure (qui timeout) par archive.ubuntu.com
-    sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
-    echo "→ Miroir corrigé : $(head -1 /etc/apt/apt-mirrors.txt)"
+    sudo sed -i 's|http://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
+    sudo sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
+    echo "→ Miroir corrigé :"
+    head -5 /etc/apt/apt-mirrors.txt
   fi
 
-  # Update avec timeouts courts
+  # Timeouts courts pour HTTP, plus généreux pour HTTPS (qui fonctionne)
   sudo apt-get update \
     -o Acquire::Retries=2 \
-    -o Acquire::http::Timeout=15 \
-    -o Acquire::https::Timeout=15
+    -o Acquire::http::Timeout=10 \
+    -o Acquire::https::Timeout=30
 
   # Install non-interactif
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     bc bison build-essential cpio flex gcc-aarch64-linux-gnu \
     gcc-arm-linux-gnueabi libelf-dev libssl-dev pahole python3 \
     rsync wget curl git unzip zip
+
+  echo "✅ Dépendances installées"
 fi
 
 # =====================================================================
@@ -345,7 +348,6 @@ sha256sum "$REFERENCE_DIR/boot.img" "$REFERENCE_DIR/dtbo.img"
 echo ""
 echo "=== Repack du boot.img ==="
 
-# Le script Python de repack est écrit dans un fichier temporaire
 REPACK_PY="$ROOT/repack_bootimg_inline.py"
 cat > "$REPACK_PY" << 'PYEOF_REPACK'
 #!/usr/bin/env python3
