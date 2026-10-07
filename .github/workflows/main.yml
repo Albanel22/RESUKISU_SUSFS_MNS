@@ -64,13 +64,15 @@ jobs:
 
       - name: Upload boot.img, dtbo.img and build logs
         uses: actions/upload-artifact@v4
-        with:
-          name: kiev-resukisu-susfs-${{ github.run_number }}
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            work/boot-resukisu-susfs-kiev-20260920.img
-            work/reference/dtbo.img
-            work/reference/boot.img
-            work/build.log
-            work/kernel/out/arch/arm64/boot/Image.gz
+        if: always()              # ← AJOUT : upload même si le workflow échoue
+         with:
+        name: kiev-resukisu-susfs-${{ github.run_number }}
+        if-no-files-found: warn  # ← Changé de "error" à "warn"
+        retention-days: 14
+        path: |
+         work/boot-resukisu-susfs-kiev-20260920.img
+         work/reference/dtbo.img
+         work/reference/boot.img
+         work/build.log
+         work/kernel/out/arch/arm64/boot/Image.gz
+         rej-analysis/          # ← AJOUT : les fichiers .rej sauvegardés
