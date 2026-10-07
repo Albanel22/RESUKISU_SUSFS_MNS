@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p "$ROOT/reference"
-          git clone --filter=blob:none --no-checkout "$SOURCE_URL" "$KERNEL_DIR"
+          git clone --filter=blob:none "$SOURCE_URL" "$KERNEL_DIR"
           wget --retry-connrefused --tries=5 -O "$ROOT/reference/boot.img" "$BOOT_URL"
           wget --retry-connrefused --tries=5 -O "$ROOT/reference/dtbo.img" "$DTBO_URL"
           sha256sum "$ROOT/reference/boot.img" "$ROOT/reference/dtbo.img"
