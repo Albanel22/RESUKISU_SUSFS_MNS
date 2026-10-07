@@ -1,0 +1,4 @@
+Sauvegarde de Branche-A
+Commit source : b95ca77a85fb5e4d0dbd9a199748f1b628fbf841
+Date de création : 2026-10-07
+Contenu : état complet des fichiers suivis avant toute modification ultérieure.
