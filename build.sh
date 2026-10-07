@@ -6,7 +6,7 @@
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
 # Hooks    : KSU_SUSFS (SUSFS Inline Hook)
-# SUSFS    : patch JackA1ltman susfs_patch_to_4.19.patch
+# SUSFS    : patch JackA1ltman + patch correctif kiev/lito
 # =============================================================================
 set -Eeuo pipefail
 
@@ -34,6 +34,9 @@ INLINE_HOOK_URL="$JACKA1LTMAN_RAW/Patches/susfs_inline_hook_patches.sh"
 BOOT_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"
 DTBO_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img"
 
+# ─── Patch correctif local (à créer dans le dépôt) ──────────────────────
+FIX_PATCH_LOCAL="$WORKSPACE/susfs_kiev_lito_fix.patch"
+
 # ─── Sortie ─────────────────────────────────────────────────────────────
 OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev.img"
 
@@ -51,7 +54,7 @@ if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
   echo ""
   echo "=== Installation des dépendances APT ==="
 
-  # Force HTTPS partout dans apt-mirrors.txt (HTTP timeout sur GitHub Actions)
+  # Force HTTPS dans apt-mirrors.txt (HTTP timeout sur GitHub Actions)
   if [[ -f /etc/apt/apt-mirrors.txt ]]; then
     sudo sed -i 's|http://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
     sudo sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
@@ -59,13 +62,11 @@ if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
     head -5 /etc/apt/apt-mirrors.txt
   fi
 
-  # Timeouts courts pour HTTP, plus généreux pour HTTPS (qui fonctionne)
   sudo apt-get update \
     -o Acquire::Retries=2 \
     -o Acquire::http::Timeout=10 \
     -o Acquire::https::Timeout=30
 
-  # Install non-interactif
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     bc bison build-essential cpio flex gcc-aarch64-linux-gnu \
     gcc-arm-linux-gnueabi libelf-dev libssl-dev pahole python3 \
@@ -165,27 +166,48 @@ ln -s ../KernelSU/kernel "$KERNEL_DIR/drivers/kernelsu"
 echo ""
 echo "=== Intégration SUSFS 4.19 JackA1ltman ==="
 
-echo "→ Téléchargement du patch SUSFS..."
+echo "→ Téléchargement du patch SUSFS principal..."
 wget -q -O /tmp/susfs_patch_to_4.19.patch "$SUSFS_PATCH_URL" || {
   echo "❌ Impossible de télécharger le patch SUSFS"; exit 1; }
 
-echo "→ Application du patch SUSFS..."
+echo "→ Application du patch SUSFS principal..."
 cd "$KERNEL_DIR"
+
+# Appliquer le patch principal (peut échouer partiellement)
+PATCH_OK=1
 if ! patch -p1 --forward --batch < /tmp/susfs_patch_to_4.19.patch; then
-  echo ""
-  echo "⚠️  Rejets détectés dans le patch SUSFS"
+  PATCH_OK=0
+  echo "⚠️  Rejets détectés dans le patch principal"
   mkdir -p "$REJ_DIR"
   find "$KERNEL_DIR" -type f -name '*.rej' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
-  find "$KERNEL_DIR" -type f -name '*.orig' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
-  for f in fs/namespace.c fs/super.c fs/proc/task_mmu.c; do
-    [[ -f "$KERNEL_DIR/$f" ]] && cp "$KERNEL_DIR/$f" "$REJ_DIR/$(basename "$f").patched" || true
-  done
-  echo "→ Rejets sauvegardés dans $REJ_DIR/"
-  ls -la "$REJ_DIR/" || true
-  echo ""
-  echo "❌ Des rejets persistent. Résous-les manuellement, puis relance."
-  exit 1
 fi
+
+# Nettoyer les .rej et .orig pour permettre l'application du patch correctif
+find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
+
+# Appliquer le patch correctif kiev/lito si nécessaire
+if [[ "$PATCH_OK" -eq 0 ]]; then
+  echo ""
+  echo "=== Application du patch correctif kiev/lito ==="
+
+  if [[ ! -f "$FIX_PATCH_LOCAL" ]]; then
+    echo "❌ Patch correctif introuvable : $FIX_PATCH_LOCAL"
+    echo "   Crée ce fichier dans la racine de ton dépôt."
+    exit 1
+  fi
+
+  if ! patch -p1 --forward --batch < "$FIX_PATCH_LOCAL"; then
+    echo "❌ Échec du patch correctif kiev/lito"
+    mkdir -p "$REJ_DIR"
+    find "$KERNEL_DIR" -type f -name '*.rej' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
+    exit 1
+  fi
+
+  echo "✅ Patch correctif kiev/lito appliqué"
+fi
+
+# Nettoyer les éventuels restes
+find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
 
 echo "→ Activation des hooks SUSFS Inline..."
 wget -q -O /tmp/susfs_inline_hook_patches.sh "$INLINE_HOOK_URL" || {
@@ -214,6 +236,45 @@ grep -q 'ksu_handle_input_handle_event' "$KERNEL_DIR/drivers/input/input.c" || {
 echo "✅ Intégration validée"
 
 # =====================================================================
+# 4c. FIX DÉCLARATION vma DANS task_mmu.c
+# =====================================================================
+echo ""
+echo "=== Vérification de la déclaration vma dans pagemap_read ==="
+
+TASK_MMU="$KERNEL_DIR/fs/proc/task_mmu.c"
+if grep -q 'SUSFS_IS_INODE_SUS_MAP' "$TASK_MMU"; then
+  # Vérifier si vma est déclarée dans pagemap_read
+  if ! awk '/static ssize_t pagemap_read/,/^}/' "$TASK_MMU" | grep -q 'struct vm_area_struct \*vma'; then
+    echo "→ Ajout de la déclaration vma dans pagemap_read..."
+    python3 - << 'PYEOF_VMA'
+import re
+path = 'fs/proc/task_mmu.c'
+with open(path, 'r') as f:
+    content = f.read()
+
+# Trouver le début de pagemap_read
+pattern = r'(static ssize_t pagemap_read\(struct file \*file, char __user \*buf,\s*\n\s*size_t count, loff_t \*ppos\)\s*\{)'
+match = re.search(pattern, content)
+if match:
+    # Vérifier si vma est déjà déclarée dans les premières lignes
+    start = match.end()
+    body_snippet = content[start:start+500]
+    if 'struct vm_area_struct *vma' not in body_snippet:
+        # Ajouter la déclaration juste après l'accolade ouvrante
+        insertion = '\n\tstruct vm_area_struct *vma;'
+        content = content[:start] + insertion + content[start:]
+        with open(path, 'w') as f:
+            f.write(content)
+        print("[+] Déclaration vma ajoutée dans pagemap_read")
+    else:
+        print("[i] vma déjà déclarée")
+PYEOF_VMA
+  else
+    echo "✅ vma déjà déclarée"
+  fi
+fi
+
+# =====================================================================
 # 5. CONFIGURATION KERNEL
 # =====================================================================
 cd "$KERNEL_DIR"
@@ -229,8 +290,6 @@ if [[ ! -x "$SCRIPTS_CONFIG" ]]; then
   chmod +x "$SCRIPTS_CONFIG"
 fi
 
-# ReSukiSU 90b4a4c7 place KSU_TRACEPOINT_HOOK, KSU_MANUAL_HOOK et
-# KSU_SUSFS dans un choice exclusif. On sélectionne KSU_SUSFS.
 "$SCRIPTS_CONFIG" --file "$OUT/.config" \
   --enable KSU \
   --enable KSU_MULTI_MANAGER_SUPPORT \
@@ -260,7 +319,7 @@ fi
 make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
 # =====================================================================
-# CONTRÔLE STRICT : vérifier que le mode attendu est bien sélectionné
+# CONTRÔLE STRICT
 # =====================================================================
 grep -q '^CONFIG_KSU=y$' "$OUT/.config"
 grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT/.config"
