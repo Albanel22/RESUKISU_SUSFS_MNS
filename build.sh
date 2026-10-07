@@ -6,7 +6,7 @@
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
 # Hooks    : KSU_SUSFS (SUSFS Inline Hook)
-# SUSFS    : patch JackA1ltman + patch correctif kiev/lito
+# SUSFS    : patch JackA1ltman + corrections Python intégrées
 # =============================================================================
 set -Eeuo pipefail
 
@@ -34,9 +34,6 @@ INLINE_HOOK_URL="$JACKA1LTMAN_RAW/Patches/susfs_inline_hook_patches.sh"
 BOOT_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"
 DTBO_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img"
 
-# ─── Patch correctif local (à créer dans le dépôt) ──────────────────────
-FIX_PATCH_LOCAL="$WORKSPACE/susfs_kiev_lito_fix.patch"
-
 # ─── Sortie ─────────────────────────────────────────────────────────────
 OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev.img"
 
@@ -54,7 +51,6 @@ if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
   echo ""
   echo "=== Installation des dépendances APT ==="
 
-  # Force HTTPS dans apt-mirrors.txt (HTTP timeout sur GitHub Actions)
   if [[ -f /etc/apt/apt-mirrors.txt ]]; then
     sudo sed -i 's|http://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
     sudo sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
@@ -76,7 +72,7 @@ if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
 fi
 
 # =====================================================================
-# 1. CLONE DU KERNEL LINEAGEOS (par branche)
+# 1. CLONE DU KERNEL LINEAGEOS
 # =====================================================================
 echo ""
 echo "=== Clone du kernel LineageOS (branche $SOURCE_BRANCH) ==="
@@ -144,7 +140,7 @@ PYEOF
 fi
 
 # =====================================================================
-# 3. CLONE ReSukiSU (commit figé)
+# 3. CLONE ReSukiSU
 # =====================================================================
 echo ""
 echo "=== Clone ReSukiSU @ $RESUKISU_COMMIT ==="
@@ -161,7 +157,7 @@ cp -a "$RESUKISU_DIR" "$KERNEL_DIR/KernelSU"
 ln -s ../KernelSU/kernel "$KERNEL_DIR/drivers/kernelsu"
 
 # =====================================================================
-# 4. INTÉGRATION SUSFS JackA1ltman
+# 4. INTÉGRATION SUSFS JackA1ltman + CORRECTIONS PYTHON
 # =====================================================================
 echo ""
 echo "=== Intégration SUSFS 4.19 JackA1ltman ==="
@@ -174,40 +170,182 @@ echo "→ Application du patch SUSFS principal..."
 cd "$KERNEL_DIR"
 
 # Appliquer le patch principal (peut échouer partiellement)
-PATCH_OK=1
 if ! patch -p1 --forward --batch < /tmp/susfs_patch_to_4.19.patch; then
-  PATCH_OK=0
-  echo "⚠️  Rejets détectés dans le patch principal"
-  mkdir -p "$REJ_DIR"
-  find "$KERNEL_DIR" -type f -name '*.rej' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
+  echo "⚠️  Rejets détectés dans le patch principal — ils seront corrigés par Python"
 fi
 
-# Nettoyer les .rej et .orig pour permettre l'application du patch correctif
+# Nettoyer les .rej et .orig (on ne les garde pas, Python va tout corriger)
 find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
 
-# Appliquer le patch correctif kiev/lito si nécessaire
-if [[ "$PATCH_OK" -eq 0 ]]; then
-  echo ""
-  echo "=== Application du patch correctif kiev/lito ==="
+echo "→ Application des corrections Python kiev/lito..."
 
-  if [[ ! -f "$FIX_PATCH_LOCAL" ]]; then
-    echo "❌ Patch correctif introuvable : $FIX_PATCH_LOCAL"
-    echo "   Crée ce fichier dans la racine de ton dépôt."
-    exit 1
-  fi
+python3 << 'PYEOF_FIX'
+import re
+import sys
+from pathlib import Path
 
-  if ! patch -p1 --forward --batch < "$FIX_PATCH_LOCAL"; then
-    echo "❌ Échec du patch correctif kiev/lito"
-    mkdir -p "$REJ_DIR"
-    find "$KERNEL_DIR" -type f -name '*.rej' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
-    exit 1
-  fi
+KERNEL = Path(".")
 
-  echo "✅ Patch correctif kiev/lito appliqué"
-fi
+fixes_applied = []
 
-# Nettoyer les éventuels restes
-find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 1 : fs/namespace.c — Ajout des includes SUSFS
+# ═══════════════════════════════════════════════════════════════════════
+ns_path = KERNEL / "fs" / "namespace.c"
+text = ns_path.read_text()
+
+includes_block = """#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+"""
+
+# Vérifier si déjà appliqué
+if "susfs_is_sdcard_android_data_not_decrypted" not in text.split("#include \"pnode.h\"")[0]:
+    # Insérer après #include <linux/fs_context.h>
+    marker = "#include <linux/fs_context.h>\n"
+    if marker in text:
+        text = text.replace(marker, marker + includes_block, 1)
+        fixes_applied.append("namespace.c: includes SUSFS ajoutés")
+    else:
+        print("❌ namespace.c : marqueur fs_context.h non trouvé", file=sys.stderr)
+        sys.exit(1)
+else:
+    fixes_applied.append("namespace.c: includes SUSFS déjà présents")
+
+ns_path.write_text(text)
+
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 2 : fs/namespace.c — vfs_create_mount (SUS_MOUNT)
+# ═══════════════════════════════════════════════════════════════════════
+text = ns_path.read_text()
+
+original_call = "\tmnt = alloc_vfsmnt(fc->source ?: \"none\");\n\tif (!mnt)\n\t\treturn ERR_PTR(-ENOMEM);"
+
+patched_call = """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted) &&
+		susfs_is_current_ksu_domain())
+		mnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
+	else
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+		mnt = alloc_vfsmnt(fc->source ?: "none");
+	if (!mnt)
+		return ERR_PTR(-ENOMEM);"""
+
+if "susfs_alloc_non_unshare_ksu_vfsmnt" not in text:
+    if original_call in text:
+        text = text.replace(original_call, patched_call, 1)
+        fixes_applied.append("namespace.c: vfs_create_mount patché")
+    else:
+        print("❌ namespace.c : bloc vfs_create_mount non trouvé", file=sys.stderr)
+        sys.exit(1)
+else:
+    fixes_applied.append("namespace.c: vfs_create_mount déjà patché")
+
+ns_path.write_text(text)
+
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 3 : fs/super.c — Ajout des includes SUSFS
+# ═══════════════════════════════════════════════════════════════════════
+super_path = KERNEL / "fs" / "super.c"
+text = super_path.read_text()
+
+super_includes = """#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#endif // #ifdef CONFIG_KSU_SUSFS
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+"""
+
+if "susfs_is_sdcard_android_data_not_decrypted" not in text.split("#include \"internal.h\"")[0]:
+    marker = "#include <linux/fs_context.h>\n"
+    if marker in text:
+        text = text.replace(marker, marker + super_includes, 1)
+        fixes_applied.append("super.c: includes SUSFS ajoutés")
+    else:
+        print("❌ super.c : marqueur fs_context.h non trouvé", file=sys.stderr)
+        sys.exit(1)
+else:
+    fixes_applied.append("super.c: includes SUSFS déjà présents")
+
+super_path.write_text(text)
+
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 4 : fs/proc/task_mmu.c — SUS_MAP + déclaration vma
+# ═══════════════════════════════════════════════════════════════════════
+mmu_path = KERNEL / "fs" / "proc" / "task_mmu.c"
+text = mmu_path.read_text()
+
+# 4a. Vérifier si le patch principal a déjà inséré le bloc SUS_MAP
+if "SUSFS_IS_INODE_SUS_MAP" not in text:
+    # Trouver la boucle while dans pagemap_read
+    pattern = r'(\t\tret = mmap_read_lock_killable\(mm\);\n\t\tif \(ret\)\n\t\t\tgoto out_free;\n)(\t\tret = walk_page_range\(start_vaddr, end, &pagemap_walk\);\n)'
+
+    replacement = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		vma = find_vma(mm, start_vaddr);
+		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			goto bypass_orig_flow;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+\2#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+bypass_orig_flow:
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+'''
+
+    new_text, count = re.subn(pattern, replacement, text, count=1)
+    if count == 0:
+        print("❌ task_mmu.c : bloc pagemap_read non trouvé", file=sys.stderr)
+        sys.exit(1)
+    text = new_text
+    fixes_applied.append("task_mmu.c: bloc SUS_MAP inséré")
+else:
+    fixes_applied.append("task_mmu.c: bloc SUS_MAP déjà présent")
+
+# 4b. Vérifier que vma est déclarée dans pagemap_read
+pagemap_match = re.search(
+    r'(static ssize_t pagemap_read\(struct file \*file, char __user \*buf,\s*\n\s*size_t count, loff_t \*ppos\)\s*\{)([^}]*?)(\n\tif \(!mm)',
+    text, re.DOTALL
+)
+
+if pagemap_match:
+    body = pagemap_match.group(2)
+    if 'struct vm_area_struct *vma' not in body:
+        # Ajouter la déclaration après la première ligne (mm)
+        insertion = '\n\tstruct vm_area_struct *vma;'
+        # Trouver la déclaration de mm pour insérer après
+        mm_decl_match = re.search(r'(\tstruct mm_struct \*mm = file->private_data;\n)', body)
+        if mm_decl_match:
+            new_body = body.replace(
+                mm_decl_match.group(1),
+                mm_decl_match.group(1) + '\tstruct vm_area_struct *vma;' + '\n',
+                1
+            )
+            text = text[:pagemap_match.start(2)] + new_body + text[pagemap_match.end(2):]
+            fixes_applied.append("task_mmu.c: déclaration vma ajoutée")
+        else:
+            print("⚠️  task_mmu.c : déclaration mm non trouvée, vma non ajoutée")
+    else:
+        fixes_applied.append("task_mmu.c: vma déjà déclarée")
+else:
+    print("⚠️  task_mmu.c : fonction pagemap_read non trouvée")
+
+mmu_path.write_text(text)
+
+# ═══════════════════════════════════════════════════════════════════════
+# RÉSUMÉ
+# ═══════════════════════════════════════════════════════════════════════
+print("")
+print("=== Corrections appliquées ===")
+for fix in fixes_applied:
+    print(f"  ✅ {fix}")
+print("")
+print("✅ Toutes les corrections Python sont appliquées")
+PYEOF_FIX
 
 echo "→ Activation des hooks SUSFS Inline..."
 wget -q -O /tmp/susfs_inline_hook_patches.sh "$INLINE_HOOK_URL" || {
@@ -233,46 +371,15 @@ done
 grep -q 'ksu_handle_input_handle_event' "$KERNEL_DIR/drivers/input/input.c" || {
   echo "❌ Hook input manquant dans drivers/input/input.c"; exit 1; }
 
-echo "✅ Intégration validée"
+# Vérifier les corrections Python
+grep -q 'susfs_alloc_non_unshare_ksu_vfsmnt' "$KERNEL_DIR/fs/namespace.c" || {
+  echo "❌ namespace.c : patch SUS_MOUNT manquant"; exit 1; }
+grep -q 'susfs_is_sdcard_android_data_not_decrypted' "$KERNEL_DIR/fs/super.c" || {
+  echo "❌ super.c : includes SUSFS manquants"; exit 1; }
+grep -q 'SUSFS_IS_INODE_SUS_MAP' "$KERNEL_DIR/fs/proc/task_mmu.c" || {
+  echo "❌ task_mmu.c : bloc SUS_MAP manquant"; exit 1; }
 
-# =====================================================================
-# 4c. FIX DÉCLARATION vma DANS task_mmu.c
-# =====================================================================
-echo ""
-echo "=== Vérification de la déclaration vma dans pagemap_read ==="
-
-TASK_MMU="$KERNEL_DIR/fs/proc/task_mmu.c"
-if grep -q 'SUSFS_IS_INODE_SUS_MAP' "$TASK_MMU"; then
-  # Vérifier si vma est déclarée dans pagemap_read
-  if ! awk '/static ssize_t pagemap_read/,/^}/' "$TASK_MMU" | grep -q 'struct vm_area_struct \*vma'; then
-    echo "→ Ajout de la déclaration vma dans pagemap_read..."
-    python3 - << 'PYEOF_VMA'
-import re
-path = 'fs/proc/task_mmu.c'
-with open(path, 'r') as f:
-    content = f.read()
-
-# Trouver le début de pagemap_read
-pattern = r'(static ssize_t pagemap_read\(struct file \*file, char __user \*buf,\s*\n\s*size_t count, loff_t \*ppos\)\s*\{)'
-match = re.search(pattern, content)
-if match:
-    # Vérifier si vma est déjà déclarée dans les premières lignes
-    start = match.end()
-    body_snippet = content[start:start+500]
-    if 'struct vm_area_struct *vma' not in body_snippet:
-        # Ajouter la déclaration juste après l'accolade ouvrante
-        insertion = '\n\tstruct vm_area_struct *vma;'
-        content = content[:start] + insertion + content[start:]
-        with open(path, 'w') as f:
-            f.write(content)
-        print("[+] Déclaration vma ajoutée dans pagemap_read")
-    else:
-        print("[i] vma déjà déclarée")
-PYEOF_VMA
-  else
-    echo "✅ vma déjà déclarée"
-  fi
-fi
+echo "✅ Intégration validée (patch principal + corrections Python)"
 
 # =====================================================================
 # 5. CONFIGURATION KERNEL
