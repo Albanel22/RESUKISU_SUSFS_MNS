@@ -1,4 +1,4 @@
-name: Build kiev ReSukiSU SUSFS kernel
+name: Build kiev ReSukiSU SUSFS
 
 on:
   workflow_dispatch:
@@ -9,60 +9,17 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    env:
-      ROOT: ${{ github.workspace }}/work
-      KERNEL_DIR: ${{ github.workspace }}/work/kernel
-      SOURCE_URL: https://github.com/LineageOS/android_kernel_motorola_sm8250
-      RESUKISU_URL: https://github.com/ReSukiSU/ReSukiSU.git
-      RESUKISU_COMMIT: 90b4a4c70f70c835b01c2be6deac58ee3c0cb4c2
-      BOOT_URL: https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img
-      DTBO_URL: https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img
-      JOBS: '2'
+    timeout-minutes: 240
     steps:
-      - name: Checkout build kit
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Build kernel + repack boot.img
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio flex gcc-aarch64-linux-gnu \
-            libelf-dev libssl-dev pahole python3 rsync wget
+          WORKSPACE="$GITHUB_WORKSPACE" \
+          JOBS=2 \
+            bash build.sh
 
-      - name: Fetch pinned kernel and reference images
-        run: |
-          set -euxo pipefail
-          mkdir -p "$ROOT/reference"
-          git clone --filter=blob:none "$SOURCE_URL" "$KERNEL_DIR"
-          wget --retry-connrefused --tries=5 -O "$ROOT/reference/boot.img" "$BOOT_URL"
-          wget --retry-connrefused --tries=5 -O "$ROOT/reference/dtbo.img" "$DTBO_URL"
-          sha256sum "$ROOT/reference/boot.img" "$ROOT/reference/dtbo.img"
-
-      - name: Prepare pinned ReSukiSU and SUSFS integration
-        run: |
-          set -euxo pipefail
-          ROOT="$ROOT" KERNEL_DIR="$KERNEL_DIR" BUNDLE_DIR="$GITHUB_WORKSPACE" \
-            bash scripts/prepare.sh
-
-      - name: Configure and compile kernel and modules
-        run: |
-          set -euxo pipefail
-          ROOT="$ROOT" KERNEL_DIR="$KERNEL_DIR" JOBS="$JOBS" \
-            bash scripts/build.sh
-
-      - name: Repack boot image
-        run: |
-          set -euxo pipefail
-          ROOT="$ROOT" \
-          REFERENCE_BOOT="$ROOT/reference/boot.img" \
-          KERNEL_IMAGE="$KERNEL_DIR/out/arch/arm64/boot/Image.gz" \
-          MODULE_ROOT="$KERNEL_DIR/out" \
-          OUTPUT_BOOT="$ROOT/boot-resukisu-susfs-kiev-20260920.img" \
-            python3 scripts/repack_bootimg.py
-          python3 scripts/inspect_bootimg.py "$ROOT/boot-resukisu-susfs-kiev-20260920.img"
-          sha256sum "$ROOT/boot-resukisu-susfs-kiev-20260920.img"
-
-      - name: Upload boot.img, dtbo.img and build logs
+      - name: Upload artefacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -70,9 +27,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           path: |
-            work/boot-resukisu-susfs-kiev-20260920.img
-            work/reference/dtbo.img
-            work/reference/boot.img
-            work/build.log
-            work/kernel/out/arch/arm64/boot/Image.gz
+            output/
             rej-analysis/
+            work/build.log
