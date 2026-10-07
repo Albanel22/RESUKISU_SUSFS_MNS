@@ -156,6 +156,32 @@ rm -rf "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/drivers/kernelsu"
 cp -a "$RESUKISU_DIR" "$KERNEL_DIR/KernelSU"
 ln -s ../KernelSU/kernel "$KERNEL_DIR/drivers/kernelsu"
 
+# Intégration Kconfig ReSukiSU dans le kernel
+echo "→ Intégration Kconfig ReSukiSU..."
+
+# 1. Ajouter source "drivers/kernelsu/Kconfig" dans drivers/Kconfig
+if ! grep -q 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"; then
+  sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"
+  echo "✅ source Kconfig ajouté"
+fi
+
+# 2. Ajouter obj-$(CONFIG_KSU) += kernelsu/ dans drivers/Makefile
+if ! grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$KERNEL_DIR/drivers/Makefile"; then
+  echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$KERNEL_DIR/drivers/Makefile"
+  echo "✅ obj- Makefile ajouté"
+fi
+
+# 3. Vérification immédiate
+grep -q 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig" || {
+  echo "❌ Échec de l'intégration Kconfig ReSukiSU"
+  exit 1
+}
+grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$KERNEL_DIR/drivers/Makefile" || {
+  echo "❌ Échec de l'intégration Makefile ReSukiSU"
+  exit 1
+}
+echo "✅ ReSukiSU intégré dans le kernel"
+
 # =====================================================================
 # 4. INTÉGRATION SUSFS JackA1ltman + CORRECTIONS PYTHON
 # =====================================================================
