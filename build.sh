@@ -50,13 +50,21 @@ df -h "$WORKSPACE" 2>/dev/null || df -h
 if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
   echo ""
   echo "=== Installation des dépendances APT ==="
-  sudo rm -f /etc/apt/apt-mirrors.txt 2>/dev/null || true
-  sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
-    /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+
+  # Corrige le miroir GitHub Actions si nécessaire
+  if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+    # Remplace le miroir Azure (qui timeout) par archive.ubuntu.com
+    sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
+    echo "→ Miroir corrigé : $(head -1 /etc/apt/apt-mirrors.txt)"
+  fi
+
+  # Update avec timeouts courts
   sudo apt-get update \
     -o Acquire::Retries=2 \
-    -o Acquire::http::Timeout=10 \
-    -o Acquire::https::Timeout=10
+    -o Acquire::http::Timeout=15 \
+    -o Acquire::https::Timeout=15
+
+  # Install non-interactif
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     bc bison build-essential cpio flex gcc-aarch64-linux-gnu \
     gcc-arm-linux-gnueabi libelf-dev libssl-dev pahole python3 \
