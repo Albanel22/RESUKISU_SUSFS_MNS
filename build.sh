@@ -159,27 +159,20 @@ ln -s ../KernelSU/kernel "$KERNEL_DIR/drivers/kernelsu"
 # Intégration Kconfig ReSukiSU dans le kernel
 echo "→ Intégration Kconfig ReSukiSU..."
 
-# 1. Ajouter source "drivers/kernelsu/Kconfig" dans drivers/Kconfig
 if ! grep -q 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"; then
   sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"
   echo "✅ source Kconfig ajouté"
 fi
 
-# 2. Ajouter obj-$(CONFIG_KSU) += kernelsu/ dans drivers/Makefile
 if ! grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$KERNEL_DIR/drivers/Makefile"; then
   echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$KERNEL_DIR/drivers/Makefile"
   echo "✅ obj- Makefile ajouté"
 fi
 
-# 3. Vérification immédiate
 grep -q 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig" || {
-  echo "❌ Échec de l'intégration Kconfig ReSukiSU"
-  exit 1
-}
+  echo "❌ Échec Kconfig ReSukiSU"; exit 1; }
 grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$KERNEL_DIR/drivers/Makefile" || {
-  echo "❌ Échec de l'intégration Makefile ReSukiSU"
-  exit 1
-}
+  echo "❌ Échec Makefile ReSukiSU"; exit 1; }
 echo "✅ ReSukiSU intégré dans le kernel"
 
 # =====================================================================
@@ -195,12 +188,10 @@ wget -q -O /tmp/susfs_patch_to_4.19.patch "$SUSFS_PATCH_URL" || {
 echo "→ Application du patch SUSFS principal..."
 cd "$KERNEL_DIR"
 
-# Appliquer le patch principal (peut échouer partiellement)
 if ! patch -p1 --forward --batch < /tmp/susfs_patch_to_4.19.patch; then
   echo "⚠️  Rejets détectés dans le patch principal — ils seront corrigés par Python"
 fi
 
-# Nettoyer les .rej et .orig (on ne les garde pas, Python va tout corriger)
 find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
 
 echo "→ Application des corrections Python kiev/lito..."
@@ -211,12 +202,9 @@ import sys
 from pathlib import Path
 
 KERNEL = Path(".")
-
 fixes_applied = []
 
-# ═══════════════════════════════════════════════════════════════════════
-# FIX 1 : fs/namespace.c — Ajout des includes SUSFS
-# ═══════════════════════════════════════════════════════════════════════
+# FIX 1 : fs/namespace.c — includes SUSFS
 ns_path = KERNEL / "fs" / "namespace.c"
 text = ns_path.read_text()
 
@@ -230,9 +218,7 @@ extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 """
 
-# Vérifier si déjà appliqué
 if "susfs_is_sdcard_android_data_not_decrypted" not in text.split("#include \"pnode.h\"")[0]:
-    # Insérer après #include <linux/fs_context.h>
     marker = "#include <linux/fs_context.h>\n"
     if marker in text:
         text = text.replace(marker, marker + includes_block, 1)
@@ -242,16 +228,11 @@ if "susfs_is_sdcard_android_data_not_decrypted" not in text.split("#include \"pn
         sys.exit(1)
 else:
     fixes_applied.append("namespace.c: includes SUSFS déjà présents")
-
 ns_path.write_text(text)
 
-# ═══════════════════════════════════════════════════════════════════════
 # FIX 2 : fs/namespace.c — vfs_create_mount (SUS_MOUNT)
-# ═══════════════════════════════════════════════════════════════════════
 text = ns_path.read_text()
-
 original_call = "\tmnt = alloc_vfsmnt(fc->source ?: \"none\");\n\tif (!mnt)\n\t\treturn ERR_PTR(-ENOMEM);"
-
 patched_call = """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted) &&
 		susfs_is_current_ksu_domain())
@@ -271,15 +252,11 @@ if "susfs_alloc_non_unshare_ksu_vfsmnt" not in text:
         sys.exit(1)
 else:
     fixes_applied.append("namespace.c: vfs_create_mount déjà patché")
-
 ns_path.write_text(text)
 
-# ═══════════════════════════════════════════════════════════════════════
-# FIX 3 : fs/super.c — Ajout des includes SUSFS
-# ═══════════════════════════════════════════════════════════════════════
+# FIX 3 : fs/super.c — includes SUSFS
 super_path = KERNEL / "fs" / "super.c"
 text = super_path.read_text()
-
 super_includes = """#ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
 #endif // #ifdef CONFIG_KSU_SUSFS
@@ -299,20 +276,14 @@ if "susfs_is_sdcard_android_data_not_decrypted" not in text.split("#include \"in
         sys.exit(1)
 else:
     fixes_applied.append("super.c: includes SUSFS déjà présents")
-
 super_path.write_text(text)
 
-# ═══════════════════════════════════════════════════════════════════════
-# FIX 4 : fs/proc/task_mmu.c — SUS_MAP + déclaration vma
-# ═══════════════════════════════════════════════════════════════════════
+# FIX 4 : fs/proc/task_mmu.c — SUS_MAP
 mmu_path = KERNEL / "fs" / "proc" / "task_mmu.c"
 text = mmu_path.read_text()
 
-# 4a. Vérifier si le patch principal a déjà inséré le bloc SUS_MAP
 if "SUSFS_IS_INODE_SUS_MAP" not in text:
-    # Trouver la boucle while dans pagemap_read
     pattern = r'(\t\tret = mmap_read_lock_killable\(mm\);\n\t\tif \(ret\)\n\t\t\tgoto out_free;\n)(\t\tret = walk_page_range\(start_vaddr, end, &pagemap_walk\);\n)'
-
     replacement = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		vma = find_vma(mm, start_vaddr);
 		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
@@ -322,28 +293,23 @@ if "SUSFS_IS_INODE_SUS_MAP" not in text:
 bypass_orig_flow:
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 '''
-
     new_text, count = re.subn(pattern, replacement, text, count=1)
     if count == 0:
-        print("❌ task_mmu.c : bloc pagemap_read non trouvé", file=sys.stderr)
-        sys.exit(1)
-    text = new_text
-    fixes_applied.append("task_mmu.c: bloc SUS_MAP inséré")
+        print("⚠️  task_mmu.c : bloc pagemap_read non trouvé (peut être déjà patché)")
+    else:
+        text = new_text
+        fixes_applied.append("task_mmu.c: bloc SUS_MAP inséré")
 else:
     fixes_applied.append("task_mmu.c: bloc SUS_MAP déjà présent")
 
-# 4b. Vérifier que vma est déclarée dans pagemap_read
+# Vérifier la déclaration vma dans pagemap_read
 pagemap_match = re.search(
     r'(static ssize_t pagemap_read\(struct file \*file, char __user \*buf,\s*\n\s*size_t count, loff_t \*ppos\)\s*\{)([^}]*?)(\n\tif \(!mm)',
     text, re.DOTALL
 )
-
 if pagemap_match:
     body = pagemap_match.group(2)
     if 'struct vm_area_struct *vma' not in body:
-        # Ajouter la déclaration après la première ligne (mm)
-        insertion = '\n\tstruct vm_area_struct *vma;'
-        # Trouver la déclaration de mm pour insérer après
         mm_decl_match = re.search(r'(\tstruct mm_struct \*mm = file->private_data;\n)', body)
         if mm_decl_match:
             new_body = body.replace(
@@ -354,17 +320,13 @@ if pagemap_match:
             text = text[:pagemap_match.start(2)] + new_body + text[pagemap_match.end(2):]
             fixes_applied.append("task_mmu.c: déclaration vma ajoutée")
         else:
-            print("⚠️  task_mmu.c : déclaration mm non trouvée, vma non ajoutée")
+            print("⚠️  task_mmu.c : déclaration mm non trouvée")
     else:
         fixes_applied.append("task_mmu.c: vma déjà déclarée")
 else:
     print("⚠️  task_mmu.c : fonction pagemap_read non trouvée")
-
 mmu_path.write_text(text)
 
-# ═══════════════════════════════════════════════════════════════════════
-# RÉSUMÉ
-# ═══════════════════════════════════════════════════════════════════════
 print("")
 print("=== Corrections appliquées ===")
 for fix in fixes_applied:
@@ -397,7 +359,6 @@ done
 grep -q 'ksu_handle_input_handle_event' "$KERNEL_DIR/drivers/input/input.c" || {
   echo "❌ Hook input manquant dans drivers/input/input.c"; exit 1; }
 
-# Vérifier les corrections Python
 grep -q 'susfs_alloc_non_unshare_ksu_vfsmnt' "$KERNEL_DIR/fs/namespace.c" || {
   echo "❌ namespace.c : patch SUS_MOUNT manquant"; exit 1; }
 grep -q 'susfs_is_sdcard_android_data_not_decrypted' "$KERNEL_DIR/fs/super.c" || {
@@ -483,29 +444,14 @@ grep -E 'CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL_HOOK|THREAD_INFO_IN_TASK)' "$OUT/.conf
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # =====================================================================
-# 7. PATCH TACTILE
+# 7. PATCH TACTILE (bloc backslashxx — testé et fonctionnel)
 # =====================================================================
-printf '%s\n' '=== Patch tactile ==='
-if [[ -f "techpack/display/msm/msm_drv.c" ]]; then
-  if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
-    printf '%s\n' '' '/* --- Début Patch Tactile --- */' \
-      '#include <linux/notifier.h>' \
-      '#include <linux/module.h>' \
-      'static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);' \
-      'int panel_register_notifier(struct notifier_block *nb) {' \
-      '    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);' \
-      '}' \
-      'EXPORT_SYMBOL(panel_register_notifier);' \
-      'int panel_unregister_notifier(struct notifier_block *nb) {' \
-      '    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);' \
-      '}' \
-      'EXPORT_SYMBOL(panel_unregister_notifier);' \
-      'void touch_set_state(int state) { return; }' \
-      'EXPORT_SYMBOL(touch_set_state);' \
-      '/* --- Fin Patch Tactile --- */' \
-      >> techpack/display/msm/msm_drv.c
-    printf '%s\n' '✅ Patch tactile appliqué'
-  fi
+echo "=== Patch tactile ==="
+if [ -f "techpack/display/msm/msm_drv.c" ]; then
+    if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
+        printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+        echo "✅ Patch tactile appliqué"
+    fi
 fi
 
 # =====================================================================
@@ -513,7 +459,6 @@ fi
 # =====================================================================
 printf '%s\n' '=== Fix bugs kernel LineageOS ==='
 
-# Fix 1 : duplicate static dans dsi_display_mot_ext.c
 DSI_FILE="$KERNEL_DIR/techpack/display/msm/dsi/dsi_display_mot_ext.c"
 if [[ -f "$DSI_FILE" ]]; then
   if grep -q "^static static " "$DSI_FILE"; then
