@@ -1,4 +1,4 @@
-name: Build kiev ReSukiSU SUSFS
+name: Build kiev ReSukiSU SUSFS (fork tactile)
 
 on:
   workflow_dispatch:
@@ -12,18 +12,13 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build kernel + repack boot.img
+      - name: Build kernel
         run: |
-          WORKSPACE="$GITHUB_WORKSPACE" \
-          JOBS=2 \
-            bash build.sh
-
-      - name: Upload artefacts
-        uses: actions/upload-artifact@v4
+          WORKSPACE="$GITHUB_WORKSPACE" JOBS=2 bash build.sh
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: kiev-resukisu-susfs-${{ github.run_number }}
+          name: kiev-resukisu-susfs-tactile-${{ github.run_number }}
           if-no-files-found: warn
           retention-days: 14
           path: |
