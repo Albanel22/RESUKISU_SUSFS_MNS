@@ -1,4 +1,4 @@
-name: Build kiev ReSukiSU SUSFS
+name: Build kiev ReSukiSU SUSFS kernel
 
 on:
   workflow_dispatch:
@@ -10,16 +10,47 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    env:
+      ROOT: ${{ github.workspace }}/work
+      KERNEL_DIR: ${{ github.workspace }}/work/kernel
+      SOURCE_URL: https://github.com/LineageOS/android_kernel_motorola_sm8250
+      RESUKISU_URL: https://github.com/ReSukiSU/ReSukiSU.git
+      RESUKISU_COMMIT: 90b4a4c70f70c835b01c2be6deac58ee3c0cb4c2
+      BOOT_URL: https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img
+      DTBO_URL: https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img
+      JOBS: '2'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout build kit
+        uses: actions/checkout@v4
 
-      - name: Build kernel + repack boot.img
+      - name: Install build dependencies
         run: |
+          set -euxo pipefail
+          # Neutralise le miroir Azure problématique
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
+            sudo sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt 2>/dev/null || true
+          fi
+          sudo apt-get update \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=10 \
+            -o Acquire::https::Timeout=30
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            bc bison build-essential cpio flex gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi libelf-dev libssl-dev pahole python3 \
+            rsync wget curl git unzip zip
+
+      - name: Build kernel + SUSFS + repack
+        run: |
+          set -euxo pipefail
           WORKSPACE="$GITHUB_WORKSPACE" \
           JOBS=2 \
             bash build.sh
 
-      - name: Upload artefacts
+      # ═══════════════════════════════════════════════════════════════
+      # UPLOAD : artefacts + FICHIERS SOURCE PATCHÉS pour analyse
+      # ═══════════════════════════════════════════════════════════════
+      - name: Upload artefacts et fichiers source patchés
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -30,3 +61,12 @@ jobs:
             output/
             rej-analysis/
             work/build.log
+            work/ksu-susfs.config
+            work/kernel/kernel/reboot.c
+            work/kernel/drivers/input/input.c
+            work/kernel/fs/namespace.c
+            work/kernel/fs/super.c
+            work/kernel/fs/proc/task_mmu.c
+            work/kernel/techpack/display/msm/msm_drv.c
+            work/kernel/out/.config
+            work/kernel/out/**/*.ko
