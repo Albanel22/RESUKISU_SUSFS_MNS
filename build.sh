@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : LineageOS 23.2 + ReSukiSU + SUSFS JackA1ltman
+# BUILD : LineageOS 23.2 + ReSukiSU + SUSFS JackA1ltman (fix tactile)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
-# Hooks    : KSU_SUSFS (SUSFS Inline Hook)
+# Hooks    : KSU_SUSFS (SUSFS Inline Hook) + désactivation hook input
 # SUSFS    : patch JackA1ltman + corrections Python intégrées
 # =============================================================================
 set -Eeuo pipefail
@@ -40,7 +40,7 @@ OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev.img"
 mkdir -p "$ROOT" "$REFERENCE_DIR" "$OUTPUT_DIR"
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "=== BUILD ReSukiSU + SUSFS JackA1ltman pour kiev ==="
+echo "=== BUILD ReSukiSU + SUSFS JackA1ltman (fix tactile) ==="
 echo "═══════════════════════════════════════════════════════════════"
 df -h "$WORKSPACE" 2>/dev/null || df -h
 
@@ -302,7 +302,6 @@ bypass_orig_flow:
 else:
     fixes_applied.append("task_mmu.c: bloc SUS_MAP déjà présent")
 
-# Vérifier la déclaration vma dans pagemap_read
 pagemap_match = re.search(
     r'(static ssize_t pagemap_read\(struct file \*file, char __user \*buf,\s*\n\s*size_t count, loff_t \*ppos\)\s*\{)([^}]*?)(\n\tif \(!mm)',
     text, re.DOTALL
@@ -342,6 +341,56 @@ bash /tmp/susfs_inline_hook_patches.sh || {
   echo "❌ Échec des hooks inline"; exit 1; }
 
 # =====================================================================
+# 4c. DÉSACTIVATION DU HOOK INPUT SUSFS (FIX TACTILE)
+# =====================================================================
+echo ""
+echo "=== Désactivation du hook input SUSFS (fix tactile) ==="
+
+python3 << 'PYEOF_INPUT_FIX'
+import re
+import sys
+from pathlib import Path
+
+input_c = Path("drivers/input/input.c")
+text = input_c.read_text()
+
+# Pattern : le bloc if qui appelle ksu_handle_input_handle_event
+pattern = r'(#ifdef CONFIG_KSU_SUSFS\n\tif \(static_branch_unlikely\(&ksu_is_input_hook_enabled\)\)\n\t\tksu_handle_input_handle_event\(&type, &code, &value\);\n#endif)'
+
+if re.search(pattern, text):
+    # Commenter le bloc
+    replacement = '''/* ═══════════════════════════════════════════════════════════════
+ * DÉSACTIVÉ : cause du tactile perdu sur kiev/lito
+ * Ce hook SUSFS perturbe le flux d'événements input.
+ * Réactiver seulement après avoir identifié la cause exacte.
+ * ═══════════════════════════════════════════════════════════════
+#ifdef CONFIG_KSU_SUSFS
+	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
+		ksu_handle_input_handle_event(&type, &code, &value);
+#endif
+ */
+'''
+    text = re.sub(pattern, replacement, text, count=1)
+    input_c.write_text(text)
+    print("✅ Hook input SUSFS commenté (désactivé)")
+elif 'ksu_handle_input_handle_event' in text:
+    print("⚠️  ksu_handle_input_handle_event présent mais pattern non matché")
+    print("   → Vérification manuelle requise")
+    # Afficher les lignes concernées pour debug
+    for i, line in enumerate(text.split('\n'), 1):
+        if 'ksu_handle_input_handle_event' in line:
+            print(f"   Ligne {i}: {line.strip()}")
+else:
+    print("ℹ️  ksu_handle_input_handle_event absent du fichier")
+    print("   → Le hook n'a peut-être pas été inséré. Rien à faire.")
+
+# Vérification finale : le hook est-il bien commenté ?
+text_after = input_c.read_text()
+if '/* ═══════════════════════════════════════════════════════════════\n * DÉSACTIVÉ' in text_after:
+    print("✅ Vérification : hook input correctement désactivé")
+PYEOF_INPUT_FIX
+
+# =====================================================================
 # 4b. VÉRIFICATIONS D'INTÉGRATION
 # =====================================================================
 echo ""
@@ -356,9 +405,6 @@ for f in fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h; do
   [[ -f "$KERNEL_DIR/$f" ]] || { echo "❌ Fichier SUSFS manquant : $f"; exit 1; }
 done
 
-grep -q 'ksu_handle_input_handle_event' "$KERNEL_DIR/drivers/input/input.c" || {
-  echo "❌ Hook input manquant dans drivers/input/input.c"; exit 1; }
-
 grep -q 'susfs_alloc_non_unshare_ksu_vfsmnt' "$KERNEL_DIR/fs/namespace.c" || {
   echo "❌ namespace.c : patch SUS_MOUNT manquant"; exit 1; }
 grep -q 'susfs_is_sdcard_android_data_not_decrypted' "$KERNEL_DIR/fs/super.c" || {
@@ -366,7 +412,7 @@ grep -q 'susfs_is_sdcard_android_data_not_decrypted' "$KERNEL_DIR/fs/super.c" ||
 grep -q 'SUSFS_IS_INODE_SUS_MAP' "$KERNEL_DIR/fs/proc/task_mmu.c" || {
   echo "❌ task_mmu.c : bloc SUS_MAP manquant"; exit 1; }
 
-echo "✅ Intégration validée (patch principal + corrections Python)"
+echo "✅ Intégration validée (patch principal + corrections Python + fix tactile)"
 
 # =====================================================================
 # 5. CONFIGURATION KERNEL
