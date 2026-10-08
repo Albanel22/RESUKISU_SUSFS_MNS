@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : LineageOS 23.2 + ReSukiSU + SUSFS JackA1ltman
+# BUILD : LineageOS 23.2 + ReSukiSU + SUSFS JackA1ltman (fork tactile)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
-# Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
+# Source   : Albanel22/android_kernel_motorola_sm8250 (branche lineage-23.2-tactile)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
 # Hooks    : KSU_SUSFS (SUSFS Inline Hook)
 # SUSFS    : patch JackA1ltman + corrections Python intégrées
@@ -24,8 +24,8 @@ ARCH="${ARCH:-arm64}"
 CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 
 # ─── Versions figées ────────────────────────────────────────────────────
-SOURCE_URL="https://github.com/LineageOS/android_kernel_motorola_sm8250"
-SOURCE_BRANCH="lineage-23.2"
+SOURCE_URL="https://github.com/Albanel22/android_kernel_motorola_sm8250"
+SOURCE_BRANCH="lineage-23.2-tactile"
 RESUKISU_URL="https://github.com/ReSukiSU/ReSukiSU.git"
 RESUKISU_COMMIT="90b4a4c70f70c835b01c2be6deac58ee3c0cb4c2"
 JACKA1LTMAN_RAW="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/main"
@@ -35,12 +35,12 @@ BOOT_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"
 DTBO_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img"
 
 # ─── Sortie ─────────────────────────────────────────────────────────────
-OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev.img"
+OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev-tactile.img"
 
 mkdir -p "$ROOT" "$REFERENCE_DIR" "$OUTPUT_DIR"
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "=== BUILD ReSukiSU + SUSFS JackA1ltman pour kiev ==="
+echo "=== BUILD ReSukiSU + SUSFS (fork tactile Albanel22) ==="
 echo "═══════════════════════════════════════════════════════════════"
 df -h "$WORKSPACE" 2>/dev/null || df -h
 
@@ -72,10 +72,10 @@ if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
 fi
 
 # =====================================================================
-# 1. CLONE DU KERNEL LINEAGEOS
+# 1. CLONE DU KERNEL LINEAGEOS (FORK TACTILE)
 # =====================================================================
 echo ""
-echo "=== Clone du kernel LineageOS (branche $SOURCE_BRANCH) ==="
+echo "=== Clone du kernel (fork tactile $SOURCE_BRANCH) ==="
 if [[ ! -d "$KERNEL_DIR/.git" ]]; then
   git clone --depth=1 -b "$SOURCE_BRANCH" "$SOURCE_URL" "$KERNEL_DIR"
 fi
@@ -84,7 +84,16 @@ git fetch --depth=1 origin "$SOURCE_BRANCH" 2>/dev/null || true
 git reset --hard "origin/$SOURCE_BRANCH" 2>/dev/null || git reset --hard FETCH_HEAD
 git clean -fdx
 git log --oneline -1
-echo "✅ Kernel cloné"
+echo "✅ Kernel cloné depuis $SOURCE_URL ($SOURCE_BRANCH)"
+
+# Vérification : le tactile est-il déjà patché dans la branche ?
+if grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c 2>/dev/null; then
+  echo "✅ Patch tactile DÉJÀ présent dans la branche tactile"
+  TOUCH_PATCH_ALREADY_PRESENT=1
+else
+  echo "⚠️  Patch tactile absent de la branche — il sera appliqué en section 7"
+  TOUCH_PATCH_ALREADY_PRESENT=0
+fi
 
 # =====================================================================
 # 2. BACKPORT get_cred_rcu (4.19.325)
@@ -302,7 +311,6 @@ bypass_orig_flow:
 else:
     fixes_applied.append("task_mmu.c: bloc SUS_MAP déjà présent")
 
-# Vérifier la déclaration vma dans pagemap_read
 pagemap_match = re.search(
     r'(static ssize_t pagemap_read\(struct file \*file, char __user \*buf,\s*\n\s*size_t count, loff_t \*ppos\)\s*\{)([^}]*?)(\n\tif \(!mm)',
     text, re.DOTALL
@@ -444,15 +452,37 @@ grep -E 'CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL_HOOK|THREAD_INFO_IN_TASK)' "$OUT/.conf
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # =====================================================================
-# 7. PATCH TACTILE (bloc backslashxx — testé et fonctionnel)
+# 7. PATCH TACTILE (conditionnel — déjà présent dans le fork tactile)
 # =====================================================================
 echo "=== Patch tactile ==="
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
+
+if [[ "$TOUCH_PATCH_ALREADY_PRESENT" -eq 1 ]]; then
+  echo "⏭️  Patch tactile déjà présent dans la branche tactile — pas d'application"
+else
+  if [ -f "techpack/display/msm/msm_drv.c" ]; then
     if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
-        printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-        echo "✅ Patch tactile appliqué"
+      printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+      echo "✅ Patch tactile appliqué"
     fi
+  fi
 fi
+
+# =====================================================================
+# 7b. FIX BUGS KERNEL LINEAGEOS
+# =====================================================================
+printf '%s\n' '=== Fix bugs kernel LineageOS ==='
+
+DSI_FILE="$KERNEL_DIR/techpack/display/msm/dsi/dsi_display_mot_ext.c"
+if [[ -f "$DSI_FILE" ]]; then
+  if grep -q "^static static " "$DSI_FILE"; then
+    sed -i 's/^static static /static /' "$DSI_FILE"
+    printf '%s\n' '✅ Fix duplicate static appliqué (dsi_display_mot_ext.c)'
+  else
+    printf '%s\n' '⏭️  Pas de duplicate static détecté'
+  fi
+fi
+
+printf '%s\n' '✅ Fixes kernel LineageOS appliqués'
 
 # =====================================================================
 # 8. COMPILATION
