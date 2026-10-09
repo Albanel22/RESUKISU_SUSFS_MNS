@@ -1,0 +1,3 @@
+Sauvegarde de Branche-C avant installation du script complet dédié.
+Commit source : c01930ceab72296645164b530cda2ebf1f8828b5
+Date : 2026-10-09

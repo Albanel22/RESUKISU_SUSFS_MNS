@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : Branche-C — LineageOS + ReSukiSU + SUSFS + patch tactile
+# BUILD : LineageOS + ReSukiSU + SUSFS JackA1ltman + patch tactile
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche par défaut, sans commit fixe)
@@ -34,7 +34,7 @@ BOOT_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"
 DTBO_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img"
 
 # ─── Sortie ─────────────────────────────────────────────────────────────
-OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev-branche-C-tactile.img"
+OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev-tactile.img"
 
 mkdir -p "$ROOT" "$REFERENCE_DIR" "$OUTPUT_DIR"
 
@@ -71,10 +71,10 @@ if command -v apt-get >/dev/null 2>&1 && [[ "${SKIP_APT:-0}" != "1" ]]; then
 fi
 
 # =====================================================================
-# 1. CLONAGE DU CODE SOURCE KERNEL LINEAGEOS
+# 1. CLONE DU KERNEL LINEAGEOS (FORK TACTILE)
 # =====================================================================
 echo ""
-echo "=== Clonage du code source LineageOS (branche par défaut, sans commit fixe) ==="
+echo "=== Clone du kernel LineageOS (branche par défaut, sans commit fixe) ==="
 if [[ ! -d "$KERNEL_DIR/.git" ]]; then
   git clone --depth=1 "$SOURCE_URL" "$KERNEL_DIR"
 fi
@@ -89,7 +89,7 @@ else
 fi
 git clean -fdx
 git log --oneline -1
-echo "✅ Code source cloné depuis $SOURCE_URL (branche par défaut, sans commit fixe)"
+echo "✅ Kernel cloné depuis $SOURCE_URL (branche par défaut, sans commit fixe)"
 
 # Vérification : le tactile est-il déjà patché dans la branche ?
 if grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c 2>/dev/null; then
