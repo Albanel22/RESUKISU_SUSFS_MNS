@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : Branche-C — LineageOS + ReSukiSU + SUSFS + patch tactile
+# BUILD : Branche-C — LineageOS + ReSukiSU + SUSFS + patch tactile (CORRIGÉ)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
-# Source   : LineageOS/android_kernel_motorola_sm8250 (branche par défaut, sans commit fixe)
+# Source   : LineageOS/android_kernel_motorola_sm8250 (branche par défaut)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
 # Hooks    : KSU_SUSFS (SUSFS Inline Hook)
 # SUSFS    : patch JackA1ltman + corrections Python intégrées
+# FIX      : fusion lito-perf_defconfig + ext_config/kiev-default.config
 # =============================================================================
 set -Eeuo pipefail
 
@@ -39,7 +40,7 @@ OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev-branche-C-tactile.img"
 mkdir -p "$ROOT" "$REFERENCE_DIR" "$OUTPUT_DIR"
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "=== BUILD ReSukiSU + SUSFS (fork tactile Albanel22) ==="
+echo "=== BUILD ReSukiSU + SUSFS + ext_config kiev (Branche-C) ==="
 echo "═══════════════════════════════════════════════════════════════"
 df -h "$WORKSPACE" 2>/dev/null || df -h
 
@@ -74,7 +75,7 @@ fi
 # 1. CLONAGE DU CODE SOURCE KERNEL LINEAGEOS
 # =====================================================================
 echo ""
-echo "=== Clonage du code source LineageOS (branche par défaut, sans commit fixe) ==="
+echo "=== Clonage du code source LineageOS ==="
 if [[ ! -d "$KERNEL_DIR/.git" ]]; then
   git clone --depth=1 "$SOURCE_URL" "$KERNEL_DIR"
 fi
@@ -89,16 +90,19 @@ else
 fi
 git clean -fdx
 git log --oneline -1
-echo "✅ Code source cloné depuis $SOURCE_URL (branche par défaut, sans commit fixe)"
+echo "✅ Code source cloné"
 
-# Vérification : le tactile est-il déjà patché dans la branche ?
-if grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c 2>/dev/null; then
-  echo "✅ Patch tactile DÉJÀ présent dans la branche tactile"
-  TOUCH_PATCH_ALREADY_PRESENT=1
-else
-  echo "⚠️  Patch tactile absent de la branche — il sera appliqué en section 7"
-  TOUCH_PATCH_ALREADY_PRESENT=0
-fi
+# Vérification : présence des fichiers de configuration requis
+echo "→ Vérification des fichiers de config..."
+for f in \
+  "arch/arm64/configs/vendor/lito-perf_defconfig" \
+  "arch/arm64/configs/vendor/ext_config/kiev-default.config"; do
+  if [[ ! -f "$f" ]]; then
+    echo "❌ Fichier de config manquant : $f"
+    exit 1
+  fi
+  echo "  ✅ $f"
+done
 
 # =====================================================================
 # 2. BACKPORT get_cred_rcu (4.19.325)
@@ -382,15 +386,50 @@ grep -q 'SUSFS_IS_INODE_SUS_MAP' "$KERNEL_DIR/fs/proc/task_mmu.c" || {
 echo "✅ Intégration validée (patch principal + corrections Python)"
 
 # =====================================================================
-# 5. CONFIGURATION KERNEL
+# 5. CONFIGURATION KERNEL — FUSION defconfig + ext_config kiev
 # =====================================================================
 cd "$KERNEL_DIR"
 rm -rf "$OUT"
+mkdir -p "$OUT"
 
-printf '%s\n' '=== Configuration ReSukiSU : mode SUSFS Inline Hook ==='
+echo ""
+echo "=== Configuration kernel : fusion lito-perf + ext_config kiev ==="
 
-make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
-  vendor/lito-perf_defconfig
+KIEV_EXT_CONFIG="arch/arm64/configs/vendor/ext_config/kiev-default.config"
+BASE_DEFCONFIG="arch/arm64/configs/vendor/lito-perf_defconfig"
+
+if [[ ! -f "$KIEV_EXT_CONFIG" ]]; then
+  echo "❌ $KIEV_EXT_CONFIG introuvable"
+  exit 1
+fi
+
+if [[ ! -f "$BASE_DEFCONFIG" ]]; then
+  echo "❌ $BASE_DEFCONFIG introuvable"
+  exit 1
+fi
+
+# Méthode : fusion via merge_config.sh (officiel LineageOS/Qualcomm)
+if [[ -x "scripts/kconfig/merge_config.sh" ]]; then
+  echo "→ Fusion via merge_config.sh..."
+  ./scripts/kconfig/merge_config.sh -O "$OUT" -m \
+    "$BASE_DEFCONFIG" \
+    "$KIEV_EXT_CONFIG" || {
+      echo "⚠️  merge_config.sh a échoué, fallback concaténation"
+      # Fallback
+      cat "$BASE_DEFCONFIG" > "$OUT/.config"
+      echo "" >> "$OUT/.config"
+      echo "# ═══ ext_config kiev-default ═══" >> "$OUT/.config"
+      cat "$KIEV_EXT_CONFIG" >> "$OUT/.config"
+    }
+else
+  echo "→ merge_config.sh introuvable, fusion manuelle..."
+  cat "$BASE_DEFCONFIG" > "$OUT/.config"
+  echo "" >> "$OUT/.config"
+  echo "# ═══ ext_config kiev-default ═══" >> "$OUT/.config"
+  cat "$KIEV_EXT_CONFIG" >> "$OUT/.config"
+fi
+
+echo "→ Application des options KSU/SUSFS..."
 
 SCRIPTS_CONFIG="$KERNEL_DIR/scripts/config"
 if [[ ! -x "$SCRIPTS_CONFIG" ]]; then
@@ -423,15 +462,20 @@ fi
   --enable KALLSYMS_ALL \
   --disable CC_WERROR
 
+echo "→ olddefconfig pour finaliser..."
 make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
 # =====================================================================
 # CONTRÔLE STRICT
 # =====================================================================
-grep -q '^CONFIG_KSU=y$' "$OUT/.config"
-grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT/.config"
-! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT/.config"
-! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$OUT/.config"
+echo ""
+echo "=== Vérification des options critiques ==="
+
+# Options KSU/SUSFS
+grep -q '^CONFIG_KSU=y$' "$OUT/.config" || { echo "❌ CONFIG_KSU manquant"; exit 1; }
+grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT/.config" || { echo "❌ CONFIG_KSU_SUSFS manquant"; exit 1; }
+! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT/.config" || { echo "❌ KSU_MANUAL_HOOK ne doit pas être activé"; exit 1; }
+! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$OUT/.config" || { echo "❌ KSU_TRACEPOINT_HOOK ne doit pas être activé"; exit 1; }
 
 for option in \
   CONFIG_KSU_SUSFS_SUS_PATH \
@@ -444,21 +488,52 @@ for option in \
   CONFIG_KSU_SUSFS_OPEN_REDIRECT \
   CONFIG_KSU_SUSFS_SUS_MAP; do
   grep -q "^${option}=y$" "$OUT/.config" || {
-    echo "Option SUSFS absente : $option" >&2
+    echo "❌ Option SUSFS absente : $option" >&2
     exit 1
   }
 done
 
-grep -E 'CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL_HOOK|THREAD_INFO_IN_TASK)' "$OUT/.config" | tee "$ROOT/ksu-susfs.config"
+echo "→ Vérification des options tactiles MMI (ext_config kiev)..."
+
+# Options tactiles critiques (extraites de kiev-default.config)
+for option in \
+  CONFIG_PANEL_NOTIFICATIONS \
+  CONFIG_INPUT_FOCALTECH_0FLASH_MMI \
+  CONFIG_INPUT_TOUCHSCREEN_MMI \
+  CONFIG_TOUCHCLASS_MMI_GESTURE_POISON_EVENT; do
+  if grep -q "^${option}=[ym]$" "$OUT/.config"; then
+    echo "  ✅ ${option}=$(grep "^${option}=" "$OUT/.config" | cut -d= -f2)"
+  else
+    echo "  ⚠️  ${option} absent (peut poser problème pour le tactile)"
+  fi
+done
+
+# Sauvegarde du .config final
+grep -E 'CONFIG_(KSU|KSU_SUSFS|PANEL_NOTIFICATIONS|INPUT_FOCALTECH|INPUT_TOUCHSCREEN|THREAD_INFO)' "$OUT/.config" | tee "$ROOT/ksu-susfs.config"
+
+echo "✅ Configuration validée"
 
 # =====================================================================
-# 6. PATCH SIGNATURES MODULE
+# 6. PATCH SIGNATURES MODULE (désactive vérifications CRC/version)
 # =====================================================================
+echo ""
+echo "=== Patch signatures module (ignore CRC/version) ==="
+
+# Désactive check_version (CRC des symboles)
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# Désactive check_modstruct_version (CRC du module struct)
+sed -i 's/if (!check_modstruct_version(/if (0 \&\& !check_modstruct_version(/g' kernel/module.c
+
+# Désactive same_magic (vermagic / version kernel)
+sed -i 's/if (same_magic(/if (0 \&\& same_magic(/g' kernel/module.c
+
+echo "✅ Patch signatures module appliqué"
 
 # =====================================================================
 # 7. PATCH TACTILE
 # =====================================================================
+echo ""
 echo "=== Patch tactile ==="
 if [ -f "techpack/display/msm/msm_drv.c" ]; then
     if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
@@ -511,14 +586,26 @@ printf '%s\n' '✅ Fixes kernel LineageOS appliqués'
 # =====================================================================
 # 8. COMPILATION
 # =====================================================================
+printf '%s\n' ''
 printf '%s\n' '=== Compilation du kernel et des modules ==='
 make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
   KCFLAGS=-Wno-error -j"$JOBS" Image.gz modules 2>&1 | tee "$LOG"
 
-test -s "$OUT/arch/arm64/boot/Image.gz"
-find "$OUT" -type f -name '*.ko' -print -quit | grep -q .
+test -s "$OUT/arch/arm64/boot/Image.gz" || { echo "❌ Image.gz manquante"; exit 1; }
+find "$OUT" -type f -name '*.ko' -print -quit | grep -q . || { echo "❌ Aucun module .ko"; exit 1; }
 sha256sum "$OUT/arch/arm64/boot/Image.gz"
 printf '%s\n' '✅ Compilation ReSukiSU/SUSFS réussie'
+
+# Vérification des modules tactiles compilés
+echo ""
+echo "=== Vérification des modules tactiles ==="
+TOUCH_MODULES=$(find "$OUT" -name "*focaltech*" -o -name "*touchscreen_mmi*" 2>/dev/null || true)
+if [[ -n "$TOUCH_MODULES" ]]; then
+  echo "✅ Modules tactiles compilés :"
+  echo "$TOUCH_MODULES"
+else
+  echo "⚠️  Aucun module tactile compilé (peut être normal si =y)"
+fi
 
 # =====================================================================
 # 9. TÉLÉCHARGEMENT DES IMAGES DE RÉFÉRENCE
@@ -691,6 +778,7 @@ echo "=== Collecte des artefacts ==="
 cp "$REFERENCE_DIR/dtbo.img" "$OUTPUT_DIR/dtbo.img" 2>/dev/null || true
 cp "$OUT/arch/arm64/boot/Image.gz" "$OUTPUT_DIR/Image.gz" 2>/dev/null || true
 cp "$LOG" "$OUTPUT_DIR/build.log" 2>/dev/null || true
+cp "$ROOT/ksu-susfs.config" "$OUTPUT_DIR/" 2>/dev/null || true
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
