@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : LineageOS + ReSukiSU + SUSFS JackA1ltman + patch tactile
+# BUILD : LineageOS 23.2 + ReSukiSU + SUSFS JackA1ltman (fork tactile)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
-# Source   : LineageOS/android_kernel_motorola_sm8250 (branche par défaut, sans commit fixe)
+# Source   : Albanel22/android_kernel_motorola_sm8250 (branche lineage-23.2-tactile)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
 # Hooks    : KSU_SUSFS (SUSFS Inline Hook)
 # SUSFS    : patch JackA1ltman + corrections Python intégrées
@@ -23,8 +23,9 @@ LOG="${LOG:-$ROOT/build.log}"
 ARCH="${ARCH:-arm64}"
 CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 
-# ─── Sources et versions ────────────────────────────────────────────────
-SOURCE_URL="https://github.com/LineageOS/android_kernel_motorola_sm8250"
+# ─── Versions figées ────────────────────────────────────────────────────
+SOURCE_URL="https://github.com/Albanel22/android_kernel_motorola_sm8250"
+SOURCE_BRANCH="lineage-23.2-tactile"
 RESUKISU_URL="https://github.com/ReSukiSU/ReSukiSU.git"
 RESUKISU_COMMIT="90b4a4c70f70c835b01c2be6deac58ee3c0cb4c2"
 JACKA1LTMAN_RAW="https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/main"
@@ -74,22 +75,16 @@ fi
 # 1. CLONE DU KERNEL LINEAGEOS (FORK TACTILE)
 # =====================================================================
 echo ""
-echo "=== Clone du kernel LineageOS (branche par défaut, sans commit fixe) ==="
+echo "=== Clone du kernel (fork tactile $SOURCE_BRANCH) ==="
 if [[ ! -d "$KERNEL_DIR/.git" ]]; then
-  git clone --depth=1 "$SOURCE_URL" "$KERNEL_DIR"
+  git clone --depth=1 -b "$SOURCE_BRANCH" "$SOURCE_URL" "$KERNEL_DIR"
 fi
 cd "$KERNEL_DIR"
-git fetch --depth=1 origin
-git remote set-head origin -a >/dev/null 2>&1 || true
-DEFAULT_REF="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD || true)"
-if [[ -n "$DEFAULT_REF" ]]; then
-  git reset --hard "$DEFAULT_REF"
-else
-  git reset --hard HEAD
-fi
+git fetch --depth=1 origin "$SOURCE_BRANCH" 2>/dev/null || true
+git reset --hard "origin/$SOURCE_BRANCH" 2>/dev/null || git reset --hard FETCH_HEAD
 git clean -fdx
 git log --oneline -1
-echo "✅ Kernel cloné depuis $SOURCE_URL (branche par défaut, sans commit fixe)"
+echo "✅ Kernel cloné depuis $SOURCE_URL ($SOURCE_BRANCH)"
 
 # Vérification : le tactile est-il déjà patché dans la branche ?
 if grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c 2>/dev/null; then
@@ -457,39 +452,20 @@ grep -E 'CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL_HOOK|THREAD_INFO_IN_TASK)' "$OUT/.conf
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # =====================================================================
-# 7. PATCH TACTILE
+# 7. PATCH TACTILE (conditionnel — déjà présent dans le fork tactile)
 # =====================================================================
 echo "=== Patch tactile ==="
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
-        cat >> techpack/display/msm/msm_drv.c <<'TOUCH_PATCH'
 
-/* --- Début Patch Tactile --- */
-#include <linux/notifier.h>
-#include <linux/module.h>
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-int panel_register_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_register_notifier);
-int panel_unregister_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_unregister_notifier);
-void touch_set_state(int state) { return; }
-EXPORT_SYMBOL(touch_set_state);
-/* --- Fin Patch Tactile --- */
-TOUCH_PATCH
-        echo "✅ Patch tactile appliqué"
-    else
-        echo "✅ Patch tactile déjà présent"
-    fi
+if [[ "$TOUCH_PATCH_ALREADY_PRESENT" -eq 1 ]]; then
+  echo "⏭️  Patch tactile déjà présent dans la branche tactile — pas d'application"
 else
-    echo "❌ techpack/display/msm/msm_drv.c introuvable" >&2
-    exit 1
+  if [ -f "techpack/display/msm/msm_drv.c" ]; then
+    if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
+      printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+      echo "✅ Patch tactile appliqué"
+    fi
+  fi
 fi
-grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c
-grep -q "touch_set_state" techpack/display/msm/msm_drv.c
 
 # =====================================================================
 # 7b. FIX BUGS KERNEL LINEAGEOS

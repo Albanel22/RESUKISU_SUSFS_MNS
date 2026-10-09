@@ -1,0 +1,27 @@
+name: Build kiev ReSukiSU SUSFS (fork tactile)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build kernel
+        run: |
+          WORKSPACE="$GITHUB_WORKSPACE" JOBS=2 bash build.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kiev-resukisu-susfs-tactile-${{ github.run_number }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            output/
+            rej-analysis/
+            work/build.log
