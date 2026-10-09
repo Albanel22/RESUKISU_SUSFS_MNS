@@ -531,40 +531,32 @@ sed -i 's/if (same_magic(/if (0 \&\& same_magic(/g' kernel/module.c
 echo "✅ Patch signatures module appliqué"
 
 # =====================================================================
-# 7. PATCH TACTILE
+# 7. PATCH TACTILE — DÉSACTIVÉ
 # =====================================================================
+# ═══════════════════════════════════════════════════════════════════
+# Le patch tactile backslashxx n'est PLUS NÉCESSAIRE car :
+#   - CONFIG_PANEL_NOTIFICATIONS=y est activé (via ext_config/kiev-default.config)
+#   - drivers/video/panel_notifier.c définit DÉJÀ :
+#       * panel_register_notifier()
+#       * panel_unregister_notifier()
+#       * touch_set_state()
+#   - Réappliquer le patch créerait un CONFLIT DE SYMBOLES
+# ═══════════════════════════════════════════════════════════════════
 echo ""
-echo "=== Patch tactile ==="
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
-        cat >> techpack/display/msm/msm_drv.c <<'TOUCH_PATCH'
+echo "=== Patch tactile : DÉSACTIVÉ (PANEL_NOTIFICATIONS=y fournit les symboles) ==="
 
-/* --- Début Patch Tactile --- */
-#include <linux/notifier.h>
-#include <linux/module.h>
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-int panel_register_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_register_notifier);
-int panel_unregister_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_unregister_notifier);
-void touch_set_state(int state) { return; }
-EXPORT_SYMBOL(touch_set_state);
-/* --- Fin Patch Tactile --- */
-TOUCH_PATCH
-        echo "✅ Patch tactile appliqué"
-    else
-        echo "✅ Patch tactile déjà présent"
-    fi
-else
-    echo "❌ techpack/display/msm/msm_drv.c introuvable" >&2
-    exit 1
+# Vérification que le vrai driver panel_notifier est bien présent
+if [[ ! -f "drivers/video/panel_notifier.c" ]]; then
+  echo "❌ drivers/video/panel_notifier.c introuvable — PANEL_NOTIFICATIONS mal configuré ?"
+  exit 1
 fi
-grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c
-grep -q "touch_set_state" techpack/display/msm/msm_drv.c
+
+if ! grep -q "panel_register_notifier" drivers/video/panel_notifier.c; then
+  echo "❌ panel_register_notifier absent de drivers/video/panel_notifier.c"
+  exit 1
+fi
+
+echo "✅ panel_notifier.c fournit panel_register_notifier, panel_unregister_notifier, touch_set_state"
 
 # =====================================================================
 # 7b. FIX BUGS KERNEL LINEAGEOS
