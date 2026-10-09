@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : LineageOS 23.2 + ReSukiSU + SUSFS JackA1ltman (fix tactile)
+# BUILD : LineageOS 23.2 + ReSukiSU + SUSFS JackA1ltman (fix tactile - approche CRC)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
-# Hooks    : KSU_SUSFS (SUSFS Inline Hook) + désactivation hook input
+# Hooks    : KSU_SUSFS (SUSFS Inline Hook) SANS input.c (préserve les CRC tactiles)
 # SUSFS    : patch JackA1ltman + corrections Python intégrées
 # =============================================================================
 set -Eeuo pipefail
@@ -40,7 +40,7 @@ OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-susfs-kiev.img"
 mkdir -p "$ROOT" "$REFERENCE_DIR" "$OUTPUT_DIR"
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "=== BUILD ReSukiSU + SUSFS JackA1ltman (fix tactile) ==="
+echo "=== BUILD ReSukiSU + SUSFS JackA1ltman (fix tactile CRC) ==="
 echo "═══════════════════════════════════════════════════════════════"
 df -h "$WORKSPACE" 2>/dev/null || df -h
 
@@ -334,64 +334,99 @@ print("")
 print("✅ Toutes les corrections Python sont appliquées")
 PYEOF_FIX
 
-echo "→ Activation des hooks SUSFS Inline..."
+# =====================================================================
+# 4b. PRÉPARATION DU SCRIPT SUSFS INLINE HOOK (SANS input.c)
+# =====================================================================
+echo ""
+echo "=== Préparation du script SUSFS Inline Hook (exclusion input.c) ==="
+
+echo "→ Téléchargement du script inline hook..."
 wget -q -O /tmp/susfs_inline_hook_patches.sh "$INLINE_HOOK_URL" || {
   echo "❌ Impossible de télécharger le script inline hook"; exit 1; }
+
+# Sauvegarder l'original pour diagnostic
+cp /tmp/susfs_inline_hook_patches.sh /tmp/susfs_inline_hook_patches.sh.orig
+
+echo "→ Exclusion de drivers/input/input.c du script (préserve les CRC tactiles)..."
+
+# Commenter toutes les lignes qui touchent à input.c
+# On identifie les lignes qui contiennent "input.c" ou "input/input"
+python3 << 'PYEOF_INLINE_EXCLUDE'
+from pathlib import Path
+import re
+
+script = Path("/tmp/susfs_inline_hook_patches.sh")
+text = script.read_text()
+lines = text.split('\n')
+
+new_lines = []
+excluded_count = 0
+
+for line in lines:
+    # Détecter les lignes qui patchent input.c
+    if re.search(r'input\.c|input/input|input_handle_event|ksu_handle_input', line, re.IGNORECASE):
+        # Commenter la ligne
+        if not line.strip().startswith('#'):
+            new_lines.append(f"# [KIEV-FIX-TACTILE] {line}")
+            excluded_count += 1
+            continue
+    new_lines.append(line)
+
+script.write_text('\n'.join(new_lines))
+print(f"✅ {excluded_count} ligne(s) relative(s) à input.c commentée(s)")
+print("   → Le script SUSFS ne touchera PAS à drivers/input/input.c")
+print("   → Les CRC des symboles input_* restent intacts")
+print("   → Les modules tactiles externes pourront charger")
+PYEOF_INLINE_EXCLUDE
+
+# Vérification
+echo "→ Vérification de l'exclusion..."
+if grep -q "input.c" /tmp/susfs_inline_hook_patches.sh | grep -v "^#"; then
+  echo "⚠️  Des lignes input.c non commentées subsistent :"
+  grep "input.c" /tmp/susfs_inline_hook_patches.sh | grep -v "^#" | head -5
+else
+  echo "✅ Toutes les lignes input.c sont commentées"
+fi
+
+echo "→ Exécution du script SUSFS Inline Hook (modifié)..."
+cd "$KERNEL_DIR"
 bash /tmp/susfs_inline_hook_patches.sh || {
   echo "❌ Échec des hooks inline"; exit 1; }
 
-# =====================================================================
-# 4c. DÉSACTIVATION DU HOOK INPUT SUSFS (FIX TACTILE)
-# =====================================================================
-echo ""
-echo "=== Désactivation du hook input SUSFS (fix tactile) ==="
-
-python3 << 'PYEOF_INPUT_FIX'
+# Vérification post-patch : input.c ne doit PAS contenir de hook SUSFS
+echo "→ Vérification que input.c est resté propre..."
+if grep -q "ksu_handle_input_handle_event" "$KERNEL_DIR/drivers/input/input.c" 2>/dev/null; then
+  echo "⚠️  ksu_handle_input_handle_event présent dans input.c"
+  echo "   → Tentative de suppression manuelle..."
+  python3 << 'PYEOF_REMOVE_HOOK'
 import re
-import sys
 from pathlib import Path
 
 input_c = Path("drivers/input/input.c")
 text = input_c.read_text()
 
-# Pattern : le bloc if qui appelle ksu_handle_input_handle_event
-pattern = r'(#ifdef CONFIG_KSU_SUSFS\n\tif \(static_branch_unlikely\(&ksu_is_input_hook_enabled\)\)\n\t\tksu_handle_input_handle_event\(&type, &code, &value\);\n#endif)'
+# Supprimer le bloc hook SUSFS
+patterns = [
+    r'#ifdef CONFIG_KSU_SUSFS\n\tif \(static_branch_unlikely\(&ksu_is_input_hook_enabled\)\)\n\t\tksu_handle_input_handle_event\(&type, &code, &value\);\n#endif\n',
+    r'#ifdef CONFIG_KSU\n.*?ksu_handle_input_handle_event.*?#endif\n',
+    r'ksu_handle_input_handle_event\(&type, &code, &value\);\n',
+]
 
-if re.search(pattern, text):
-    # Commenter le bloc
-    replacement = '''/* ═══════════════════════════════════════════════════════════════
- * DÉSACTIVÉ : cause du tactile perdu sur kiev/lito
- * Ce hook SUSFS perturbe le flux d'événements input.
- * Réactiver seulement après avoir identifié la cause exacte.
- * ═══════════════════════════════════════════════════════════════
-#ifdef CONFIG_KSU_SUSFS
-	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
-		ksu_handle_input_handle_event(&type, &code, &value);
-#endif
- */
-'''
-    text = re.sub(pattern, replacement, text, count=1)
-    input_c.write_text(text)
-    print("✅ Hook input SUSFS commenté (désactivé)")
-elif 'ksu_handle_input_handle_event' in text:
-    print("⚠️  ksu_handle_input_handle_event présent mais pattern non matché")
-    print("   → Vérification manuelle requise")
-    # Afficher les lignes concernées pour debug
-    for i, line in enumerate(text.split('\n'), 1):
-        if 'ksu_handle_input_handle_event' in line:
-            print(f"   Ligne {i}: {line.strip()}")
-else:
-    print("ℹ️  ksu_handle_input_handle_event absent du fichier")
-    print("   → Le hook n'a peut-être pas été inséré. Rien à faire.")
+for pattern in patterns:
+    new_text = re.sub(pattern, '', text, flags=re.DOTALL)
+    if new_text != text:
+        text = new_text
+        print(f"[+] Bloc supprimé avec pattern {pattern[:30]}...")
 
-# Vérification finale : le hook est-il bien commenté ?
-text_after = input_c.read_text()
-if '/* ═══════════════════════════════════════════════════════════════\n * DÉSACTIVÉ' in text_after:
-    print("✅ Vérification : hook input correctement désactivé")
-PYEOF_INPUT_FIX
+input_c.write_text(text)
+print("✅ Hook input.c nettoyé")
+PYEOF_REMOVE_HOOK
+else
+  echo "✅ input.c ne contient AUCUN hook SUSFS"
+fi
 
 # =====================================================================
-# 4b. VÉRIFICATIONS D'INTÉGRATION
+# 4c. VÉRIFICATIONS D'INTÉGRATION
 # =====================================================================
 echo ""
 echo "=== Vérifications d'intégration ==="
@@ -412,7 +447,17 @@ grep -q 'susfs_is_sdcard_android_data_not_decrypted' "$KERNEL_DIR/fs/super.c" ||
 grep -q 'SUSFS_IS_INODE_SUS_MAP' "$KERNEL_DIR/fs/proc/task_mmu.c" || {
   echo "❌ task_mmu.c : bloc SUS_MAP manquant"; exit 1; }
 
-echo "✅ Intégration validée (patch principal + corrections Python + fix tactile)"
+# Vérification critique : input.c NE DOIT PAS contenir de hook SUSFS
+if grep -q "ksu_handle_input_handle_event" "$KERNEL_DIR/drivers/input/input.c" 2>/dev/null; then
+  echo "❌ CRITIQUE : input.c contient encore un hook SUSFS !"
+  echo "   → Les modules tactiles ne chargeront PAS"
+  exit 1
+else
+  echo "✅ input.c est propre (aucun hook SUSFS)"
+  echo "✅ Les CRC des symboles input_* sont préservés"
+fi
+
+echo "✅ Intégration validée"
 
 # =====================================================================
 # 5. CONFIGURATION KERNEL
