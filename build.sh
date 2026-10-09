@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : ReSukiSU + SUSFS cyberc3dr + MANUAL HOOK (combinaison finale)
+# BUILD : ReSukiSU + SUSFS cyberc3dr + MANUAL HOOK (version finale)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche par défaut)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
 # Hooks    : KSU_MANUAL_HOOK (stat, execve, faccessat, reboot)
-# SUSFS    : patch cyberc3dr nGKI (méthode backslashxx, PAS inline hook)
+# SUSFS    : patch cyberc3dr nGKI + corrections Python intégrées
 # =============================================================================
 set -Eeuo pipefail
 
@@ -22,7 +22,6 @@ JOBS="${JOBS:-$(nproc)}"
 LOG="${LOG:-$ROOT/build.log}"
 ARCH="${ARCH:-arm64}"
 CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Sources et versions ────────────────────────────────────────────────
 SOURCE_URL="https://github.com/LineageOS/android_kernel_motorola_sm8250"
@@ -183,7 +182,7 @@ grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$KERNEL_DIR/drivers/Makefile" || { ech
 echo "✅ ReSukiSU intégré"
 
 # =====================================================================
-# 4. SUSFS cyberc3dr (méthode backslashxx)
+# 4. SUSFS cyberc3dr + CORRECTIONS PYTHON INTÉGRÉES
 # =====================================================================
 echo ""
 echo "=== Intégration SUSFS cyberc3dr (nGKI 4.19) ==="
@@ -205,61 +204,19 @@ patch --batch --forward -p1 < "$SUSFS_PATCH" > /tmp/susfs_patch.log 2>&1
 SUSFS_PATCH_RC=$?
 set -e
 
-REJECTS=$(find "$KERNEL_DIR" -type f -name '*.rej' -print)
-SUSFS_FIX_PATCH="${SUSFS_FIX_PATCH:-$SCRIPT_DIR/susfs_kiev_lito_fix.patch}"
-
-if [ "$SUSFS_PATCH_RC" -ne 0 ] || [ -n "$REJECTS" ]; then
+if [ "$SUSFS_PATCH_RC" -ne 0 ]; then
   echo "⚠️  Rejets détectés dans le patch SUSFS cyberc3dr"
   mkdir -p "$REJ_DIR"
   find "$KERNEL_DIR" -type f -name '*.rej' -exec cp {} "$REJ_DIR/" \; 2>/dev/null || true
-
-  if [ ! -f "$SUSFS_FIX_PATCH" ]; then
-    echo "❌ Rejets SUSFS + correctif kiev/lito absent : $SUSFS_FIX_PATCH"
-    echo "→ Les .rej sont sauvegardés dans $REJ_DIR/"
-    cat /tmp/susfs_patch.log | tail -30
-    exit 1
-  fi
-
-  echo "→ Application du correctif kiev/lito..."
-  patch --batch --forward -p1 < "$SUSFS_FIX_PATCH" > /tmp/susfs_kiev_lito_fix.log 2>&1 || {
-    cat /tmp/susfs_kiev_lito_fix.log
-    exit 1
-  }
-  find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
+  echo "→ Corrections Python appliquées ci-dessous"
 fi
 
-find "$KERNEL_DIR" -type f -name '*.orig' -delete
+# Nettoyage des .rej et .orig (les corrections Python vont les remplacer)
+find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
 
-# Fix include susfs_def.h dans fs/stat.c
-python3 - <<'PYEOF_STAT'
-from pathlib import Path
-path = Path("fs/stat.c")
-text = path.read_text()
-include = "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n"
-if "#include <linux/susfs_def.h>" not in text:
-    marker = "#include <asm/unistd.h>\n"
-    if marker in text:
-        text = text.replace(marker, marker + "\n" + include, 1)
-        path.write_text(text)
-        print("✅ include susfs_def.h ajouté à fs/stat.c")
-PYEOF_STAT
+echo ""
+echo "=== Application des corrections Python kiev/lito ==="
 
-# Fix susfs_run_sus_path_loop global
-python3 - <<'PYEOF_SYMBOL'
-from pathlib import Path
-path = Path("fs/susfs.c")
-text = path.read_text()
-old = "static void susfs_run_sus_path_loop(void)"
-new = "void susfs_run_sus_path_loop(void)"
-if old in text:
-    text = text.replace(old, new, 1)
-    path.write_text(text)
-    print("✅ susfs_run_sus_path_loop global")
-elif new in text:
-    print("✅ susfs_run_sus_path_loop déjà global")
-PYEOF_SYMBOL
-
-# Correction Python kiev/lito pour namespace.c, super.c, task_mmu.c
 python3 << 'PYEOF_FIX'
 import re, sys
 from pathlib import Path
@@ -267,8 +224,12 @@ from pathlib import Path
 KERNEL = Path(".")
 fixes = []
 
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 1 : fs/namespace.c — includes SUSFS
+# ═══════════════════════════════════════════════════════════════════════
 ns_path = KERNEL / "fs" / "namespace.c"
 text = ns_path.read_text()
+
 includes_block = """#ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
 #endif
@@ -278,13 +239,22 @@ extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 #define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 """
+
 if "susfs_is_sdcard_android_data_not_decrypted" not in text.split("#include \"pnode.h\"")[0]:
     marker = "#include <linux/fs_context.h>\n"
     if marker in text:
         text = text.replace(marker, marker + includes_block, 1)
         fixes.append("namespace.c: includes SUSFS ajoutés")
+    else:
+        print("❌ namespace.c : marqueur fs_context.h non trouvé", file=sys.stderr)
+        sys.exit(1)
+else:
+    fixes.append("namespace.c: includes SUSFS déjà présents")
 ns_path.write_text(text)
 
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 2 : fs/namespace.c — vfs_create_mount (SUS_MOUNT)
+# ═══════════════════════════════════════════════════════════════════════
 text = ns_path.read_text()
 original_call = "\tmnt = alloc_vfsmnt(fc->source ?: \"none\");\n\tif (!mnt)\n\t\treturn ERR_PTR(-ENOMEM);"
 patched_call = """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -296,14 +266,24 @@ patched_call = """#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 		mnt = alloc_vfsmnt(fc->source ?: "none");
 	if (!mnt)
 		return ERR_PTR(-ENOMEM);"""
+
 if "susfs_alloc_non_unshare_ksu_vfsmnt" not in text:
     if original_call in text:
         text = text.replace(original_call, patched_call, 1)
         fixes.append("namespace.c: vfs_create_mount patché")
+    else:
+        print("❌ namespace.c : bloc vfs_create_mount non trouvé", file=sys.stderr)
+        sys.exit(1)
+else:
+    fixes.append("namespace.c: vfs_create_mount déjà patché")
 ns_path.write_text(text)
 
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 3 : fs/super.c — includes SUSFS
+# ═══════════════════════════════════════════════════════════════════════
 super_path = KERNEL / "fs" / "super.c"
 text = super_path.read_text()
+
 super_includes = """#ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
 #endif // #ifdef CONFIG_KSU_SUSFS
@@ -312,15 +292,25 @@ extern bool susfs_is_current_ksu_domain(void);
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 """
+
 if "susfs_is_sdcard_android_data_not_decrypted" not in text.split("#include \"internal.h\"")[0]:
     marker = "#include <linux/fs_context.h>\n"
     if marker in text:
         text = text.replace(marker, marker + super_includes, 1)
         fixes.append("super.c: includes SUSFS ajoutés")
+    else:
+        print("❌ super.c : marqueur fs_context.h non trouvé", file=sys.stderr)
+        sys.exit(1)
+else:
+    fixes.append("super.c: includes SUSFS déjà présents")
 super_path.write_text(text)
 
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 4 : fs/proc/task_mmu.c — SUS_MAP
+# ═══════════════════════════════════════════════════════════════════════
 mmu_path = KERNEL / "fs" / "proc" / "task_mmu.c"
 text = mmu_path.read_text()
+
 if "SUSFS_IS_INODE_SUS_MAP" not in text:
     pattern = r'(\t\tret = mmap_read_lock_killable\(mm\);\n\t\tif \(ret\)\n\t\t\tgoto out_free;\n)(\t\tret = walk_page_range\(start_vaddr, end, &pagemap_walk\);\n)'
     replacement = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
@@ -333,20 +323,71 @@ bypass_orig_flow:
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 '''
     new_text, count = re.subn(pattern, replacement, text, count=1)
-    if count > 0:
+    if count == 0:
+        print("⚠️  task_mmu.c : bloc pagemap_read non trouvé (peut être déjà patché)")
+    else:
         text = new_text
         fixes.append("task_mmu.c: bloc SUS_MAP inséré")
+else:
+    fixes.append("task_mmu.c: bloc SUS_MAP déjà présent")
+
+# Déclaration vma
+pagemap_match = re.search(
+    r'(static ssize_t pagemap_read\(struct file \*file, char __user \*buf,\s*\n\s*size_t count, loff_t \*ppos\)\s*\{)([^}]*?)(\n\tif \(!mm)',
+    text, re.DOTALL
+)
+if pagemap_match:
+    body = pagemap_match.group(2)
+    if 'struct vm_area_struct *vma' not in body:
+        mm_decl_match = re.search(r'(\tstruct mm_struct \*mm = file->private_data;\n)', body)
+        if mm_decl_match:
+            new_body = body.replace(
+                mm_decl_match.group(1),
+                mm_decl_match.group(1) + '\tstruct vm_area_struct *vma;' + '\n',
+                1
+            )
+            text = text[:pagemap_match.start(2)] + new_body + text[pagemap_match.end(2):]
+            fixes.append("task_mmu.c: déclaration vma ajoutée")
+    else:
+        fixes.append("task_mmu.c: vma déjà déclarée")
 mmu_path.write_text(text)
 
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 5 : include susfs_def.h dans fs/stat.c (si nécessaire)
+# ═══════════════════════════════════════════════════════════════════════
+stat_path = KERNEL / "fs" / "stat.c"
+text = stat_path.read_text()
+include_block = "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n"
+if "#include <linux/susfs_def.h>" not in text:
+    marker = "#include <asm/unistd.h>\n"
+    if marker in text:
+        text = text.replace(marker, marker + "\n" + include_block, 1)
+        stat_path.write_text(text)
+        fixes.append("stat.c: include susfs_def.h ajouté")
+
+# ═══════════════════════════════════════════════════════════════════════
+# FIX 6 : susfs_run_sus_path_loop global
+# ═══════════════════════════════════════════════════════════════════════
+susfs_c = KERNEL / "fs" / "susfs.c"
+if susfs_c.exists():
+    text = susfs_c.read_text()
+    old = "static void susfs_run_sus_path_loop(void)"
+    new = "void susfs_run_sus_path_loop(void)"
+    if old in text:
+        text = text.replace(old, new, 1)
+        susfs_c.write_text(text)
+        fixes.append("susfs.c: susfs_run_sus_path_loop global")
+
 print("")
-print("=== Corrections SUSFS appliquées ===")
+print("=== Corrections appliquées ===")
 for f in fixes: print(f"  ✅ {f}")
+print("✅ Corrections Python terminées")
 PYEOF_FIX
 
-echo "✅ Patch SUSFS cyberc3dr appliqué"
+echo "✅ Patch SUSFS cyberc3dr + corrections appliqués"
 
 # =====================================================================
-# 4b. HOOKS MANUELS ReSukiSU (obligatoires)
+# 4b. HOOKS MANUELS ReSukiSU
 # =====================================================================
 echo ""
 echo "================================================================"
@@ -482,7 +523,7 @@ p.write_text(text)
 print("  ✅ Hook reboot appliqué")
 PYEOF_REBOOT
 
-# Vérification finale
+# Vérification
 echo ""
 echo "=== Vérification des hooks ==="
 HOOK_FAIL=0
@@ -531,7 +572,7 @@ SCRIPTS_CONFIG="$KERNEL_DIR/scripts/config"
 [[ -x "$SCRIPTS_CONFIG" ]] || chmod +x "$SCRIPTS_CONFIG"
 
 # ═══════════════════════════════════════════════════════════════════
-# CONFIG FINALE : MANUAL_HOOK + SUSFS cyberc3dr (PAS de KSU_SUSFS)
+# CONFIG FINALE
 # ═══════════════════════════════════════════════════════════════════
 "$SCRIPTS_CONFIG" --file "$OUT/.config" \
   --enable KSU \
@@ -585,7 +626,7 @@ grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y$' "$OUT/.config" || { echo "�
 grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT/.config" || { echo "❌ CONFIG_KSU_SUSFS"; exit 1; }
 ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$OUT/.config" || { echo "❌ KSU_TRACEPOINT_HOOK doit être désactivé"; exit 1; }
 
-echo "  ✅ KSU + MANUAL_HOOK + SUSFS (cyberc3dr)"
+echo "  ✅ KSU + MANUAL_HOOK + SUSFS cyberc3dr"
 
 for option in \
   CONFIG_KSU_SUSFS_SUS_PATH \
@@ -786,7 +827,7 @@ cp "$ROOT/ksu-susfs.config" "$OUTPUT_DIR/" 2>/dev/null || true
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "=== BUILD TERMINÉ (ReSukiSU + SUSFS cyberc3dr + MANUAL HOOK) ==="
+echo "=== BUILD TERMINÉ ==="
 echo "═══════════════════════════════════════════════════════════════"
 ls -lh "$OUTPUT_DIR/"
 echo ""
