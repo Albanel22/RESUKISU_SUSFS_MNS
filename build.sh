@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : Branche-C — LineageOS + ReSukiSU + SUSFS + patch tactile (CORRIGÉ)
+# BUILD : Branche-C — LineageOS + ReSukiSU + SUSFS (FINAL)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche par défaut)
@@ -8,6 +8,7 @@
 # Hooks    : KSU_SUSFS (SUSFS Inline Hook)
 # SUSFS    : patch JackA1ltman + corrections Python intégrées
 # FIX      : fusion lito-perf_defconfig + ext_config/kiev-default.config
+# FIX2     : PANEL_NOTIFICATIONS=y + modules MMI vendor (pas recompilés)
 # =============================================================================
 set -Eeuo pipefail
 
@@ -415,7 +416,6 @@ if [[ -x "scripts/kconfig/merge_config.sh" ]]; then
     "$BASE_DEFCONFIG" \
     "$KIEV_EXT_CONFIG" || {
       echo "⚠️  merge_config.sh a échoué, fallback concaténation"
-      # Fallback
       cat "$BASE_DEFCONFIG" > "$OUT/.config"
       echo "" >> "$OUT/.config"
       echo "# ═══ ext_config kiev-default ═══" >> "$OUT/.config"
@@ -429,7 +429,7 @@ else
   cat "$KIEV_EXT_CONFIG" >> "$OUT/.config"
 fi
 
-echo "→ Application des options KSU/SUSFS..."
+echo "→ Application des options KSU/SUSFS + désactivation modules MMI vendor..."
 
 SCRIPTS_CONFIG="$KERNEL_DIR/scripts/config"
 if [[ ! -x "$SCRIPTS_CONFIG" ]]; then
@@ -460,7 +460,10 @@ fi
   --disable KPROBE_EVENTS \
   --enable KALLSYMS \
   --enable KALLSYMS_ALL \
-  --disable CC_WERROR
+  --disable CC_WERROR \
+  --disable INPUT_FOCALTECH_0FLASH_MMI \
+  --disable INPUT_TOUCHSCREEN_MMI \
+  --disable TOUCHCLASS_MMI_GESTURE_POISON_EVENT
 
 echo "→ olddefconfig pour finaliser..."
 make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
@@ -493,24 +496,36 @@ for option in \
   }
 done
 
-echo "→ Vérification des options tactiles MMI (ext_config kiev)..."
+echo ""
+echo "→ Vérification des options tactiles (CRITIQUE)..."
 
-# Options tactiles critiques (extraites de kiev-default.config)
-for option in \
-  CONFIG_PANEL_NOTIFICATIONS \
-  CONFIG_INPUT_FOCALTECH_0FLASH_MMI \
-  CONFIG_INPUT_TOUCHSCREEN_MMI \
-  CONFIG_TOUCHCLASS_MMI_GESTURE_POISON_EVENT; do
-  if grep -q "^${option}=[ym]$" "$OUT/.config"; then
-    echo "  ✅ ${option}=$(grep "^${option}=" "$OUT/.config" | cut -d= -f2)"
-  else
-    echo "  ⚠️  ${option} absent (peut poser problème pour le tactile)"
-  fi
-done
+# PANEL_NOTIFICATIONS doit être ACTIVÉ (fournit les symboles)
+if grep -q '^CONFIG_PANEL_NOTIFICATIONS=y$' "$OUT/.config"; then
+  echo "  ✅ CONFIG_PANEL_NOTIFICATIONS=y (fournit panel_register_notifier)"
+else
+  echo "  ❌ CONFIG_PANEL_NOTIFICATIONS doit être =y"
+  exit 1
+fi
+
+# Les modules MMI ne doivent PAS être compilés (utilise les vendor)
+if ! grep -q '^CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y$' "$OUT/.config" && \
+   ! grep -q '^CONFIG_INPUT_FOCALTECH_0FLASH_MMI=m$' "$OUT/.config"; then
+  echo "  ✅ CONFIG_INPUT_FOCALTECH_0FLASH_MMI désactivé (utilise le vendor)"
+else
+  echo "  ⚠️  CONFIG_INPUT_FOCALTECH_0FLASH_MMI est encore activé"
+fi
+
+if ! grep -q '^CONFIG_INPUT_TOUCHSCREEN_MMI=y$' "$OUT/.config" && \
+   ! grep -q '^CONFIG_INPUT_TOUCHSCREEN_MMI=m$' "$OUT/.config"; then
+  echo "  ✅ CONFIG_INPUT_TOUCHSCREEN_MMI désactivé (utilise le vendor)"
+else
+  echo "  ⚠️  CONFIG_INPUT_TOUCHSCREEN_MMI est encore activé"
+fi
 
 # Sauvegarde du .config final
 grep -E 'CONFIG_(KSU|KSU_SUSFS|PANEL_NOTIFICATIONS|INPUT_FOCALTECH|INPUT_TOUCHSCREEN|THREAD_INFO)' "$OUT/.config" | tee "$ROOT/ksu-susfs.config"
 
+echo ""
 echo "✅ Configuration validée"
 
 # =====================================================================
@@ -533,15 +548,6 @@ echo "✅ Patch signatures module appliqué"
 # =====================================================================
 # 7. PATCH TACTILE — DÉSACTIVÉ
 # =====================================================================
-# ═══════════════════════════════════════════════════════════════════
-# Le patch tactile backslashxx n'est PLUS NÉCESSAIRE car :
-#   - CONFIG_PANEL_NOTIFICATIONS=y est activé (via ext_config/kiev-default.config)
-#   - drivers/video/panel_notifier.c définit DÉJÀ :
-#       * panel_register_notifier()
-#       * panel_unregister_notifier()
-#       * touch_set_state()
-#   - Réappliquer le patch créerait un CONFLIT DE SYMBOLES
-# ═══════════════════════════════════════════════════════════════════
 echo ""
 echo "=== Patch tactile : DÉSACTIVÉ (PANEL_NOTIFICATIONS=y fournit les symboles) ==="
 
@@ -588,15 +594,15 @@ find "$OUT" -type f -name '*.ko' -print -quit | grep -q . || { echo "❌ Aucun m
 sha256sum "$OUT/arch/arm64/boot/Image.gz"
 printf '%s\n' '✅ Compilation ReSukiSU/SUSFS réussie'
 
-# Vérification des modules tactiles compilés
+# Vérification : les modules MMI vendor NE doivent PAS être compilés
 echo ""
-echo "=== Vérification des modules tactiles ==="
-TOUCH_MODULES=$(find "$OUT" -name "*focaltech*" -o -name "*touchscreen_mmi*" 2>/dev/null || true)
-if [[ -n "$TOUCH_MODULES" ]]; then
-  echo "✅ Modules tactiles compilés :"
-  echo "$TOUCH_MODULES"
+echo "=== Vérification absence des modules MMI vendor (attendu) ==="
+TOUCH_MODULES=$(find "$OUT" -name "*focaltech_0flash_mmi*" -o -name "*touchscreen_mmi*" 2>/dev/null || true)
+if [[ -z "$TOUCH_MODULES" ]]; then
+  echo "✅ Aucun module MMI compilé localement (utilise les vendor de la ROM)"
 else
-  echo "⚠️  Aucun module tactile compilé (peut être normal si =y)"
+  echo "⚠️  Modules MMI trouvés (ne devraient PAS être compilés) :"
+  echo "$TOUCH_MODULES"
 fi
 
 # =====================================================================
