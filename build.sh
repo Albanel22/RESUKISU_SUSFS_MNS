@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BUILD : ReSukiSU + SUSFS cyberc3dr + MANUAL HOOK (version finale)
+# BUILD : ReSukiSU + SUSFS cyberc3dr + INLINE HOOK (version corrigée)
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche par défaut)
 # ReSukiSU : ReSukiSU/ReSukiSU @ 90b4a4c7
-# Hooks    : KSU_MANUAL_HOOK (stat, execve, faccessat, reboot)
+# Hooks    : SUSFS Inline hook (posés par le patch cyberc3dr)
 # SUSFS    : patch cyberc3dr nGKI + corrections Python intégrées
+#
+# Changements par rapport à la version "manual hook" :
+#  - KSU_MANUAL_HOOK, KSU_TRACEPOINT_HOOK et KSU_SUSFS sont dans le même
+#    "choice" Kconfig : exclusifs. SUSFS => inline hook, donc les hooks
+#    manuels (ancienne section 4b) sont supprimés.
+#  - Les pilotes tactiles (focaltech_0flash_mmi, touchscreen_mmi) ne sont
+#    plus désactivés, et leur présence est vérifiée.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -34,12 +41,12 @@ BOOT_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"
 DTBO_URL="https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img"
 
 # ─── Sortie ─────────────────────────────────────────────────────────────
-OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-cyberc3dr-manualhook-kiev.img"
+OUTPUT_BOOT="$OUTPUT_DIR/boot-resukisu-cyberc3dr-inlinehook-kiev.img"
 
 mkdir -p "$ROOT" "$REFERENCE_DIR" "$OUTPUT_DIR"
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "=== BUILD ReSukiSU + SUSFS cyberc3dr + MANUAL HOOK ==="
+echo "=== BUILD ReSukiSU + SUSFS cyberc3dr + INLINE HOOK ==="
 echo "═══════════════════════════════════════════════════════════════"
 df -h "$WORKSPACE" 2>/dev/null || df -h
 
@@ -387,156 +394,27 @@ PYEOF_FIX
 echo "✅ Patch SUSFS cyberc3dr + corrections appliqués"
 
 # =====================================================================
-# 4b. HOOKS MANUELS ReSukiSU
+# 4b. VÉRIFICATION DES HOOKS INLINE (posés par le patch SUSFS)
+#     (les anciens hooks manuels sont supprimés : KSU_MANUAL_HOOK est
+#      exclusif avec KSU_SUSFS dans le choice Kconfig de ReSukiSU)
 # =====================================================================
 echo ""
-echo "================================================================"
-echo "=== HOOKS MANUELS ReSukiSU (stat, execve, faccessat, reboot) ==="
-echo "================================================================"
-
-# Hook 1 : stat
-echo "→ Hook 1/4 : stat (fs/stat.c)"
-python3 << 'PYEOF_STAT'
-import re, sys
-from pathlib import Path
-p = Path("fs/stat.c")
-text = p.read_text()
-if "ksu_handle_stat" in text:
-    print("  ⏭️  déjà présent"); sys.exit(0)
-externs = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-__attribute__((hot))
-extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
-#endif
-'''
-pattern = r'(SYSCALL_DEFINE4\(newfstatat)'
-new_text, n = re.subn(pattern, externs + '\n' + r'\1', text, count=1)
-if n == 0: print("  ❌ newfstatat introuvable", file=sys.stderr); sys.exit(1)
-text = new_text
-pattern = r'(SYSCALL_DEFINE4\(newfstatat[^)]+\)\s*\{)'
-new_text, n = re.subn(pattern, r'''\1
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_stat(&dfd, &filename, &flag);
-#endif''', text, count=1)
-if n > 0: text = new_text
-p.write_text(text)
-print("  ✅ Hook stat appliqué")
-PYEOF_STAT
-
-# Hook 2 : execve
-echo "→ Hook 2/4 : execve (fs/exec.c)"
-python3 << 'PYEOF_EXECVE'
-import re, sys
-from pathlib import Path
-p = Path("fs/exec.c")
-text = p.read_text()
-if "ksu_handle_execveat" in text:
-    print("  ⏭️  déjà présent"); sys.exit(0)
-externs = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-__attribute__((hot))
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
-__attribute__((hot))
-extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags, int *retval);
-#endif
-'''
-pattern = r'(static int do_execveat_common\()'
-new_text, n = re.subn(pattern, externs + '\n' + r'\1', text, count=1)
-if n == 0: print("  ❌ do_execveat_common introuvable", file=sys.stderr); sys.exit(1)
-text = new_text
-
-old_call = "\treturn __do_execve_file(fd, filename, argv, envp, flags, NULL);"
-new_call = """#ifdef CONFIG_KSU_MANUAL_HOOK
-	int retval;
-	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
-	ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
-	return retval;
-#else
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-#endif"""
-if old_call in text:
-    text = text.replace(old_call, new_call, 1)
-p.write_text(text)
-print("  ✅ Hook execve appliqué")
-PYEOF_EXECVE
-
-# Hook 3 : faccessat
-echo "→ Hook 3/4 : faccessat (fs/open.c)"
-python3 << 'PYEOF_FACCESSAT'
-import re, sys
-from pathlib import Path
-p = Path("fs/open.c")
-text = p.read_text()
-if "ksu_handle_faccessat" in text:
-    print("  ⏭️  déjà présent"); sys.exit(0)
-externs = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-__attribute__((hot))
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
-#endif
-'''
-pattern = r'(SYSCALL_DEFINE3\(faccessat,)'
-new_text, n = re.subn(pattern, externs + '\n' + r'\1', text, count=1)
-if n == 0: print("  ❌ faccessat introuvable", file=sys.stderr); sys.exit(1)
-text = new_text
-pattern = r'(SYSCALL_DEFINE3\(faccessat[^)]+\)\s*\{)'
-new_text, n = re.subn(pattern, r'''\1
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-#endif''', text, count=1)
-if n > 0: text = new_text
-p.write_text(text)
-print("  ✅ Hook faccessat appliqué")
-PYEOF_FACCESSAT
-
-# Hook 4 : reboot
-echo "→ Hook 4/4 : reboot (kernel/reboot.c)"
-python3 << 'PYEOF_REBOOT'
-import re, sys
-from pathlib import Path
-p = Path("kernel/reboot.c")
-text = p.read_text()
-if "ksu_handle_sys_reboot" in text:
-    print("  ⏭️  déjà présent"); sys.exit(0)
-externs = '''
-#ifdef CONFIG_KSU_MANUAL_HOOK
-extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
-#endif
-'''
-pattern = r'(SYSCALL_DEFINE4\(reboot, int, magic1, int, magic2, unsigned int, cmd,)'
-new_text, n = re.subn(pattern, externs + '\n' + r'\1', text, count=1)
-if n == 0:
-    print("  ⚠️  reboot introuvable dans reboot.c", file=sys.stderr); sys.exit(1)
-text = new_text
-old = "\tchar buffer[256];\n\tint ret = 0;"
-new = """	char buffer[256];
-	int ret = 0;
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-#endif"""
-if old in text:
-    text = text.replace(old, new, 1)
-p.write_text(text)
-print("  ✅ Hook reboot appliqué")
-PYEOF_REBOOT
-
-# Vérification
-echo ""
-echo "=== Vérification des hooks ==="
-HOOK_FAIL=0
-for f in "fs/stat.c:ksu_handle_stat" "fs/exec.c:ksu_handle_execveat" "fs/open.c:ksu_handle_faccessat" "kernel/reboot.c:ksu_handle_sys_reboot"; do
+echo "=== Vérification des hooks inline (informatif) ==="
+for f in \
+  "fs/stat.c:ksu_handle_stat" \
+  "fs/exec.c:ksu_handle_execveat" \
+  "fs/open.c:ksu_handle_faccessat" \
+  "kernel/reboot.c:ksu_handle_sys_reboot" \
+  "kernel/sys.c:ksu_handle_setresuid" \
+  "fs/read_write.c:ksu_handle_sys_read" \
+  "drivers/input/input.c:ksu_handle_input_handle_event"; do
   file="${f%%:*}"; sym="${f##*:}"
-  if grep -q "$sym" "$file"; then
+  if grep -q "$sym" "$file" 2>/dev/null; then
     echo "  ✅ $file : $sym"
   else
-    echo "  ❌ $file : $sym MANQUANT"
-    HOOK_FAIL=1
+    echo "  ⚠️  $file : $sym absent (à confirmer dans le log ReSukiSU 'found')"
   fi
 done
-[[ "$HOOK_FAIL" -eq 0 ]] || { echo "❌ Hooks manquants"; exit 1; }
 
 # =====================================================================
 # 5. CONFIGURATION KERNEL — FUSION defconfig + ext_config kiev
@@ -566,13 +444,13 @@ else
   cat "$KIEV_EXT_CONFIG" >> "$OUT/.config"
 fi
 
-echo "→ Application des options KSU/SUSFS + MANUAL HOOK..."
+echo "→ Application des options KSU/SUSFS (inline hook)..."
 
 SCRIPTS_CONFIG="$KERNEL_DIR/scripts/config"
 [[ -x "$SCRIPTS_CONFIG" ]] || chmod +x "$SCRIPTS_CONFIG"
 
 # ═══════════════════════════════════════════════════════════════════
-# CONFIG FINALE
+# CONFIG FINALE (le tactile n'est PAS touché : il vient de kiev-default)
 # ═══════════════════════════════════════════════════════════════════
 "$SCRIPTS_CONFIG" --file "$OUT/.config" \
   --enable KSU \
@@ -580,10 +458,7 @@ SCRIPTS_CONFIG="$KERNEL_DIR/scripts/config"
   --disable KSU_TAMPER_SYSCALL_TABLE \
   --disable KSU_HACK_ARM64_BRANCH_LINK \
   --disable KSU_TRACEPOINT_HOOK \
-  --enable KSU_MANUAL_HOOK \
-  --enable KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
-  --enable KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
-  --enable KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
+  --disable KSU_MANUAL_HOOK \
   --disable KSU_KPROBES_KSUD \
   --enable KSU_LSM_SECURITY_HOOKS \
   --enable KSU_FEATURE_SULOG \
@@ -604,10 +479,7 @@ SCRIPTS_CONFIG="$KERNEL_DIR/scripts/config"
   --disable KPROBE_EVENTS \
   --enable KALLSYMS \
   --enable KALLSYMS_ALL \
-  --disable CC_WERROR \
-  --disable INPUT_FOCALTECH_0FLASH_MMI \
-  --disable INPUT_TOUCHSCREEN_MMI \
-  --disable TOUCHCLASS_MMI_GESTURE_POISON_EVENT
+  --disable CC_WERROR
 
 echo "→ olddefconfig..."
 make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
@@ -619,14 +491,10 @@ echo ""
 echo "=== Vérification des options critiques ==="
 
 grep -q '^CONFIG_KSU=y$' "$OUT/.config" || { echo "❌ CONFIG_KSU"; exit 1; }
-grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT/.config" || { echo "❌ CONFIG_KSU_MANUAL_HOOK"; exit 1; }
-grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y$' "$OUT/.config" || { echo "❌ AUTO_SETUID"; exit 1; }
-grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y$' "$OUT/.config" || { echo "❌ AUTO_INITRC"; exit 1; }
-grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y$' "$OUT/.config" || { echo "❌ AUTO_INPUT"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT/.config" || { echo "❌ CONFIG_KSU_SUSFS"; exit 1; }
+! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$OUT/.config" || { echo "❌ KSU_MANUAL_HOOK doit être désactivé (inline hook)"; exit 1; }
 ! grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$OUT/.config" || { echo "❌ KSU_TRACEPOINT_HOOK doit être désactivé"; exit 1; }
-
-echo "  ✅ KSU + MANUAL_HOOK + SUSFS cyberc3dr"
+echo "  ✅ KSU + SUSFS (inline hook)"
 
 for option in \
   CONFIG_KSU_SUSFS_SUS_PATH \
@@ -642,7 +510,14 @@ echo "  ✅ Fonctionnalités SUSFS activées"
 
 grep -q '^CONFIG_PANEL_NOTIFICATIONS=y$' "$OUT/.config" && echo "  ✅ PANEL_NOTIFICATIONS=y" || { echo "❌ PANEL_NOTIFICATIONS"; exit 1; }
 
-grep -E 'CONFIG_(KSU|KSU_SUSFS|KSU_MANUAL|PANEL_NOTIFICATIONS|INPUT_FOCALTECH|INPUT_TOUCHSCREEN)' "$OUT/.config" | tee "$ROOT/ksu-susfs.config"
+# Tactile : doit rester actif (modules vendor Motorola comme backslashxx)
+grep -q '^CONFIG_INPUT_FOCALTECH_0FLASH_MMI=[ym]$' "$OUT/.config" \
+  || { echo "❌ INPUT_FOCALTECH_0FLASH_MMI non activé"; grep -iE 'FOCALTECH|TOUCHSCREEN_MMI' "$OUT/.config" || true; exit 1; }
+grep -q '^CONFIG_INPUT_TOUCHSCREEN_MMI=[ym]$' "$OUT/.config" \
+  || { echo "❌ INPUT_TOUCHSCREEN_MMI non activé"; grep -iE 'FOCALTECH|TOUCHSCREEN_MMI' "$OUT/.config" || true; exit 1; }
+echo "  ✅ Tactile (focaltech_0flash_mmi / touchscreen_mmi) activé"
+
+grep -E 'CONFIG_(KSU|KSU_SUSFS|PANEL_NOTIFICATIONS|INPUT_FOCALTECH|INPUT_TOUCHSCREEN|TOUCHCLASS)' "$OUT/.config" | tee "$ROOT/ksu-susfs.config"
 
 # =====================================================================
 # 6. PATCH SIGNATURES MODULE
@@ -675,6 +550,16 @@ make O="$OUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
 
 test -s "$OUT/arch/arm64/boot/Image.gz" || { echo "❌ Image.gz manquante"; exit 1; }
 find "$OUT" -type f -name '*.ko' -print -quit | grep -q . || { echo "❌ Aucun module .ko"; exit 1; }
+
+# Les modules tactiles doivent avoir été compilés
+for ko in focaltech_0flash_mmi.ko touchscreen_mmi.ko; do
+  if find "$OUT" -type f -name "$ko" | grep -q .; then
+    echo "  ✅ $ko compilé"
+  else
+    echo "❌ $ko absent de la compilation"; exit 1
+  fi
+done
+
 sha256sum "$OUT/arch/arm64/boot/Image.gz"
 echo "✅ Compilation réussie"
 
@@ -822,6 +707,7 @@ echo ""
 echo "=== Collecte des artefacts ==="
 cp "$REFERENCE_DIR/dtbo.img" "$OUTPUT_DIR/dtbo.img" 2>/dev/null || true
 cp "$OUT/arch/arm64/boot/Image.gz" "$OUTPUT_DIR/Image.gz" 2>/dev/null || true
+cp "$OUT/.config" "$OUTPUT_DIR/final.config" 2>/dev/null || true
 cp "$LOG" "$OUTPUT_DIR/build.log" 2>/dev/null || true
 cp "$ROOT/ksu-susfs.config" "$OUTPUT_DIR/" 2>/dev/null || true
 
